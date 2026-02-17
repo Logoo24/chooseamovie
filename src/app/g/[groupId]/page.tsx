@@ -2,6 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
+import { AppShell } from "@/components/AppShell";
+import { Button, Card, CardTitle, Muted, Pill } from "@/components/ui";
+import { useToast } from "@/components/useToast";
 import { loadGroup, type Group } from "@/lib/storage";
 
 function ratingLabel(group: Group) {
@@ -18,6 +21,7 @@ export default function GroupLobbyPage() {
   const groupId = params.groupId;
 
   const [group, setGroup] = useState<Group | null>(null);
+  const { show, Toast } = useToast();
 
   useEffect(() => {
     setGroup(loadGroup(groupId));
@@ -30,55 +34,119 @@ export default function GroupLobbyPage() {
 
   if (!group) {
     return (
-      <div className="min-h-screen p-6">
-        <div className="mx-auto max-w-xl space-y-4">
-          <h1 className="text-2xl font-semibold">Group not found</h1>
-          <p className="text-sm text-gray-700">
-            This group only exists in the browser that created it (for now).
-          </p>
-          <a className="text-sm underline" href="/create">
-            Create a new group
-          </a>
+      <AppShell>
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">Group not found</h1>
+            <Pill>Local only</Pill>
+          </div>
+          <Card>
+            <CardTitle>Why this happened</CardTitle>
+            <div className="mt-2">
+              <Muted>
+                Right now, groups are saved to the browser that created them. Later we will
+                add a database so invite links work across phones.
+              </Muted>
+            </div>
+            <div className="mt-4">
+              <a href="/create">
+                <Button>Create a group</Button>
+              </a>
+            </div>
+          </Card>
         </div>
-      </div>
+      </AppShell>
     );
   }
 
   return (
-    <div className="min-h-screen p-6">
-      <div className="mx-auto max-w-xl space-y-6">
-        <h1 className="text-2xl font-semibold">{group.name}</h1>
-
-        <div className="space-y-2 rounded border p-4">
-          <div className="text-sm font-medium">Invite link</div>
-          <div className="break-all rounded bg-gray-50 p-2 text-sm">{inviteLink}</div>
-
-          <button
-            className="rounded bg-black px-3 py-2 text-sm text-white"
-            onClick={async () => {
-              await navigator.clipboard.writeText(inviteLink);
-              alert("Copied invite link!");
-            }}
-          >
-            Copy link
-          </button>
-        </div>
-
-        <div className="space-y-2 rounded border p-4">
-          <div className="text-sm font-medium">Settings</div>
-          <div className="text-sm text-gray-700">
-            Content:{" "}
-            {group.settings.contentType === "movies" ? "Movies only" : "Movies and shows"}
+    <AppShell>
+      {Toast}
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">{group.name}</h1>
+            <div className="mt-1 text-sm text-white/60">Lobby</div>
           </div>
-          <div className="text-sm text-gray-700">Allowed ratings: {ratingLabel(group)}</div>
+          <Pill>{group.settings.contentType === "movies" ? "Movies" : "Movies + Shows"}</Pill>
         </div>
 
-        <div className="flex gap-3">
-          <a className="rounded border px-3 py-2 text-sm" href="/create">
-            Create another group
-          </a>
-        </div>
+        <Card>
+          <CardTitle>Invite link</CardTitle>
+          <div className="mt-3 space-y-3">
+            <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3 text-sm text-white/85">
+              <div className="break-all">{inviteLink}</div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={async () => {
+                  await navigator.clipboard.writeText(inviteLink);
+                  show("Invite link copied");
+                }}
+              >
+                Copy link
+              </Button>
+
+              <Button
+                variant="secondary"
+                onClick={async () => {
+                  if (navigator.share) {
+                    try {
+                      await navigator.share({ title: "ChooseAMovie", url: inviteLink });
+                    } catch {
+                      // user canceled
+                    }
+                  } else {
+                    await navigator.clipboard.writeText(inviteLink);
+                    show("Copied (share not supported)");
+                  }
+                }}
+              >
+                Share
+              </Button>
+            </div>
+
+            <Muted>
+              Note: In Feature 1, this link is mainly for you. Cross-device joining will come when we add a database.
+            </Muted>
+          </div>
+        </Card>
+
+        <Card>
+          <CardTitle>Settings</CardTitle>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
+              <div className="text-sm font-semibold">Content</div>
+              <div className="mt-1 text-sm text-white/60">
+                {group.settings.contentType === "movies" ? "Movies only" : "Movies and shows"}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
+              <div className="text-sm font-semibold">Allowed ratings</div>
+              <div className="mt-1 text-sm text-white/60">{ratingLabel(group)}</div>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <CardTitle>Next step</CardTitle>
+          <div className="mt-2">
+            <Muted>
+              Feature 2 will add the rating screen and start collecting ratings.
+            </Muted>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <a href="/create">
+              <Button variant="ghost">Create another group</Button>
+            </a>
+            <a href={`/g/${groupId}/rate`}>
+              <Button variant="secondary">Go to rating (next)</Button>
+            </a>
+          </div>
+        </Card>
       </div>
-    </div>
+    </AppShell>
   );
 }
