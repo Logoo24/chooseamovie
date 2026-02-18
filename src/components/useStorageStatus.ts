@@ -1,0 +1,39 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { checkSupabaseReachable, isSupabaseConfigured } from "@/lib/supabase";
+
+export type StorageMode = "checking" | "online" | "offline";
+
+export function useStorageStatus() {
+  const configured = isSupabaseConfigured();
+  const [mode, setMode] = useState<StorageMode>(configured ? "checking" : "offline");
+
+  useEffect(() => {
+    let alive = true;
+
+    if (!configured) {
+      setMode("offline");
+      return () => {
+        alive = false;
+      };
+    }
+
+    setMode("checking");
+    void checkSupabaseReachable().then((reachable) => {
+      if (!alive) return;
+      setMode(reachable ? "online" : "offline");
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [configured]);
+
+  return {
+    configured,
+    mode,
+    isOffline: mode === "offline",
+    isOnline: mode === "online",
+  };
+}

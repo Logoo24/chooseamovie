@@ -1,4 +1,5 @@
 export type ContentType = "movies" | "movies_and_shows";
+export type RatingMode = "unlimited" | "shortlist";
 
 export type GroupSettings = {
   contentType: ContentType;
@@ -6,12 +7,18 @@ export type GroupSettings = {
   allowPG: boolean;
   allowPG13: boolean;
   allowR: boolean;
+
+  ratingMode: RatingMode;       // new
+  shortlistItems: string[];     // new (only used if ratingMode === "shortlist")
 };
 
 export type Group = {
   id: string;
   name: string;
   createdAt: string;
+  schemaVersion: 1;
+  joinCode?: string;
+  ownerUserId?: string;
   settings: GroupSettings;
 };
 
@@ -30,7 +37,14 @@ export function loadGroup(groupId: string): Group | null {
   if (!raw) return null;
 
   try {
-    return JSON.parse(raw) as Group;
+    const parsed = JSON.parse(raw) as Omit<Group, "schemaVersion"> & {
+      schemaVersion?: number;
+    };
+
+    return {
+      ...parsed,
+      schemaVersion: 1,
+    };
   } catch {
     return null;
   }

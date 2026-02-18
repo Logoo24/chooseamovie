@@ -1,18 +1,17 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@config "../../tailwind.config.ts";
+@import "tailwindcss";
 
 /* Brand tokens */
 :root {
-  --bg: 10 10 12;            /* near-black */
-  --card: 18 18 22;          /* dark card */
-  --card-2: 24 24 30;        /* slightly lighter */
-  --text: 245 245 248;       /* near-white */
-  --muted: 170 170 180;      /* muted text */
-  --border: 45 45 55;        /* subtle border */
-  --red: 229 9 20;           /* Netflix-ish red */
-  --yellow: 255 204 51;      /* popcorn yellow */
-  --shadow: 0 0 0;           /* we use class shadows */
+  --bg: 10 10 12;
+  --card: 18 18 22;
+  --card-2: 24 24 30;
+  --text: 245 245 248;
+  --muted: 170 170 180;
+  --border: 45 45 55;
+  --red: 229 9 20;
+  --yellow: 255 204 51;
+  --shadow: 0 0 0;
 }
 
 html,
@@ -25,7 +24,6 @@ body {
   color: rgb(var(--text));
 }
 
-/* Smooth text on dark */
 * {
   -webkit-tap-highlight-color: transparent;
 }
@@ -34,7 +32,7 @@ a {
   color: inherit;
 }
 
-/* Optional: nicer scrollbar (works in Chromium) */
+/* Optional: nicer scrollbar (Chromium) */
 ::-webkit-scrollbar {
   width: 10px;
 }
@@ -44,4 +42,15 @@ a {
 }
 ::-webkit-scrollbar-track {
   background: rgba(255, 255, 255, 0.03);
+}
+
+/* Star pop animation */
+@keyframes cam-star-pop {
+  0% { transform: scale(1); }
+  55% { transform: scale(1.12); }
+  100% { transform: scale(1.02); }
+}
+
+.cam-star-pop {
+  animation: cam-star-pop 140ms ease-out;
 }

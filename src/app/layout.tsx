@@ -1,5 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
+import { AuthBootstrap } from "@/components/AuthBootstrap";
 
 export const metadata: Metadata = {
   title: "ChooseAMovie",
@@ -12,7 +13,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AuthBootstrap />
+        {children}
+      </body>
     </html>
   );
 }
