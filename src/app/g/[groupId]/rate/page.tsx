@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
+import { GroupTabs } from "@/components/GroupTabs";
+import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
 import { StarRating } from "@/components/StarRating";
 import { Button, Card, CardTitle, Muted, Pill } from "@/components/ui";
@@ -12,16 +14,15 @@ import {
   getUpcomingQueue,
   type EndlessQueueItem,
 } from "@/lib/endlessQueueStore";
-import { customListLabel, ratingModeLabel } from "@/lib/groupLabels";
+import { customListLabel } from "@/lib/groupLabels";
 import { getHostDisplayName } from "@/lib/hostProfileStore";
 import { isHostForGroup } from "@/lib/hostStore";
-import { useToast } from "@/components/useToast";
 import { ensureMember } from "@/lib/memberStore";
 import { setRating as setRatingValue } from "@/lib/ratingStore";
+import { ensureAnonymousSession } from "@/lib/supabase";
 import { upsertTitleSnapshot } from "@/lib/titleCacheStore";
 import { loadGroup, type Group } from "@/lib/storage";
 import {
-  countRated,
   getActiveMember,
   loadRatings,
   setActiveMember,
@@ -39,7 +40,27 @@ type RateTitle = {
   genre?: string;
   posterPath?: string | null;
   description?: string;
-  infoUrl: string;
+};
+
+type HistoryEntry = {
+  title: RateTitle;
+  previousValue: RatingValue | undefined;
+  mode: "shortlist" | "endless";
+  indexBefore: number;
+};
+
+type ProvidersResponse = {
+  tmdb_link?: string;
+  prioritized?: Array<{
+    provider_id: number;
+    provider_name: string;
+    logo_path: string | null;
+    access_type: "flatrate" | "rent" | "buy";
+  }>;
+};
+
+type DetailsResponse = {
+  release_date?: string | null;
 };
 
 function makeCustomListTitles(items: string[], genreLabel: string): RateTitle[] {
@@ -48,7 +69,6 @@ function makeCustomListTitles(items: string[], genreLabel: string): RateTitle[] 
     name,
     type: "movie",
     genre: genreLabel,
-    infoUrl: `https://www.themoviedb.org/search?query=${encodeURIComponent(name)}`,
   }));
 }
 
@@ -63,99 +83,65 @@ function mapQueueToRateTitle(item: EndlessQueueItem): RateTitle {
     genre: item.type === "movie" ? "Trending Movie" : "Trending Show",
     posterPath: item.poster_path,
     description: item.overview,
-    infoUrl: `https://www.themoviedb.org/${item.type}/${item.id}`,
   };
 }
 
-function PosterCard({ title }: { title: RateTitle }) {
-  const genre = title.genre ?? "Movie Night";
-  const badge = title.type === "movie" ? "Movie" : "Show";
-  const posterSrc = title.posterPath ? `https://image.tmdb.org/t/p/w342${title.posterPath}` : null;
+function normalizeProviderName(name: string) {
+  const n = name.trim();
+  if (n === "Google Play Movies" || n === "Google Play") return "Google TV";
+  return n;
+}
 
-  return (
-    <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[rgb(var(--card))]">
-      <div className="absolute inset-0 opacity-40">
-        <div className="h-full w-full bg-gradient-to-br from-[rgb(var(--red))]/25 via-white/5 to-[rgb(var(--yellow))]/15" />
-      </div>
-
-      <div className="relative p-4">
-        {posterSrc ? (
-          <div className="mb-4 overflow-hidden rounded-xl border border-white/10 bg-white/5">
-            <img src={posterSrc} alt={title.name} className="h-56 w-full object-cover sm:h-72" />
-          </div>
-        ) : null}
-
-        <div className="flex items-center justify-between gap-2">
-          <Pill>{badge}</Pill>
-        </div>
-
-        <div className="mt-4">
-          <div className="text-xl font-semibold tracking-tight">{title.name}</div>
-          <div className="mt-1 text-sm text-white/65">
-            {title.year ? title.year : " "} {title.year ? "| " : ""}
-            {genre}
-          </div>
-          {title.description ? <div className="mt-2 text-sm text-white/70">{title.description}</div> : null}
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          <a
-            href={title.infoUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white/85 hover:bg-white/10"
-          >
-            More info
-          </a>
-        </div>
-      </div>
-    </div>
-  );
+function isLikelyInTheaters(releaseDate?: string | null) {
+  if (!releaseDate) return false;
+  const released = new Date(releaseDate);
+  if (Number.isNaN(released.getTime())) return false;
+  const now = Date.now();
+  const diffDays = Math.floor((now - released.getTime()) / (1000 * 60 * 60 * 24));
+  return diffDays >= 0 && diffDays <= 60;
 }
 
 export default function RatePage() {
   const params = useParams<{ groupId: string }>();
   const groupId = params.groupId;
   const router = useRouter();
-  const { show, Toast } = useToast();
 
   const [group, setGroup] = useState<Group | null>(null);
   const [isBootstrapping, setIsBootstrapping] = useState(true);
+  const [authBlocked, setAuthBlocked] = useState(false);
+  const [authRetryKey, setAuthRetryKey] = useState(0);
   const [isHost, setIsHost] = useState(false);
-
   const [member, setMember] = useState<Member | null>(null);
+  const [redirectingToHome, setRedirectingToHome] = useState(false);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentStars, setCurrentStars] = useState(0);
-
-  const [ratedCount, setRatedCount] = useState(0);
   const [unratedTitles, setUnratedTitles] = useState<RateTitle[]>([]);
   const [isRefreshingQueue, setIsRefreshingQueue] = useState(false);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
 
-  const [showInvite, setShowInvite] = useState(false);
-  const [redirectingToHub, setRedirectingToHub] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [isLoadingProviders, setIsLoadingProviders] = useState(false);
-  const [providerLogos, setProviderLogos] = useState<
+  const [providerItems, setProviderItems] = useState<
     Array<{ provider_id: number; provider_name: string; logo_path: string | null }>
   >([]);
   const [providersLink, setProvidersLink] = useState("");
-
-  type ProvidersResponse = {
-    tmdb_link?: string;
-    prioritized?: Array<{
-      provider_id: number;
-      provider_name: string;
-      logo_path: string | null;
-      access_type: "flatrate" | "rent" | "buy";
-    }>;
-  };
+  const [isInTheaters, setIsInTheaters] = useState(false);
 
   useEffect(() => {
     let alive = true;
     setIsBootstrapping(true);
+    setAuthBlocked(false);
 
     (async () => {
+      const anonUserId = await ensureAnonymousSession();
+      if (!alive) return;
+      if (!anonUserId) {
+        setAuthBlocked(true);
+        setIsBootstrapping(false);
+        return;
+      }
+
       const g = loadGroup(groupId);
       const host = isHostForGroup(groupId);
       if (!alive) return;
@@ -180,7 +166,7 @@ export default function RatePage() {
       }
 
       if (!alive) return;
-      setRedirectingToHub(true);
+      setRedirectingToHome(true);
       setIsBootstrapping(false);
       router.replace(`/g/${groupId}`);
     })();
@@ -188,12 +174,7 @@ export default function RatePage() {
     return () => {
       alive = false;
     };
-  }, [groupId]);
-
-  const inviteLink = useMemo(() => {
-    if (typeof window === "undefined") return "";
-    return `${window.location.origin}/g/${groupId}`;
-  }, [groupId]);
+  }, [groupId, router, authRetryKey]);
 
   useEffect(() => {
     let alive = true;
@@ -201,7 +182,6 @@ export default function RatePage() {
 
     const refresh = async () => {
       const ratings = loadRatings(groupId, member.id);
-      setRatedCount(countRated(ratings));
 
       if (group.settings.ratingMode === "shortlist") {
         const catalog = makeCustomListTitles(
@@ -213,6 +193,7 @@ export default function RatePage() {
         setUnratedTitles(unrated);
         setCurrentIndex(0);
         setCurrentStars(0);
+        setHistory([]);
         return;
       }
 
@@ -220,11 +201,10 @@ export default function RatePage() {
       const queue = await ensureEndlessQueue(groupId, member.id, group.settings);
       if (!alive) return;
       setIsRefreshingQueue(false);
-
-      const queueTitles = queue.map(mapQueueToRateTitle);
-      setUnratedTitles(queueTitles);
+      setUnratedTitles(queue.map(mapQueueToRateTitle));
       setCurrentIndex(0);
       setCurrentStars(0);
+      setHistory([]);
     };
 
     void refresh();
@@ -235,9 +215,11 @@ export default function RatePage() {
   }, [group, member, groupId]);
 
   const currentTitle = unratedTitles[currentIndex] ?? null;
+  const isCustomListMode = group?.settings.ratingMode === "shortlist";
+  const remainingCount = Math.max(0, unratedTitles.length - currentIndex);
 
   useEffect(() => {
-    if (!currentTitle || group?.settings.ratingMode === "shortlist") return;
+    if (!currentTitle || !group || group.settings.ratingMode === "shortlist") return;
     void upsertTitleSnapshot(currentTitle.id, {
       title_id: currentTitle.id,
       title: currentTitle.name,
@@ -246,38 +228,53 @@ export default function RatePage() {
       media_type: currentTitle.type,
       overview: currentTitle.description ?? null,
     });
-  }, [currentTitle, group?.settings.ratingMode]);
+  }, [currentTitle, group]);
 
   useEffect(() => {
     let alive = true;
     setShowDetails(false);
-    setProviderLogos([]);
+    setProviderItems([]);
     setProvidersLink("");
+    setIsInTheaters(false);
 
-    if (!currentTitle?.tmdbType || !currentTitle.tmdbId) return;
+    if (!currentTitle) return;
+    const googleQuery = `${currentTitle.name} ${currentTitle.type === "movie" ? "movie" : "show"}`;
+    setProvidersLink(`https://www.google.com/search?q=${encodeURIComponent(googleQuery)}`);
+
+    if (!currentTitle.tmdbType || !currentTitle.tmdbId) return;
 
     const run = async () => {
       setIsLoadingProviders(true);
       try {
-        const response = await fetch(
+        const providersRes = await fetch(
           `/api/tmdb/providers?type=${currentTitle.tmdbType}&id=${currentTitle.tmdbId}`
         );
-        const body = (await response.json()) as ProvidersResponse;
-        if (!response.ok || !alive) return;
+        const providersBody = (await providersRes.json()) as ProvidersResponse;
+        if (!providersRes.ok || !alive) return;
 
-        const logos = (body.prioritized ?? [])
-          .filter((item) => item.logo_path)
+        const providers = (providersBody.prioritized ?? [])
           .slice(0, 4)
           .map((item) => ({
             provider_id: item.provider_id,
-            provider_name: item.provider_name,
+            provider_name: normalizeProviderName(item.provider_name),
             logo_path: item.logo_path,
           }));
 
-        setProviderLogos(logos);
-        setProvidersLink(body.tmdb_link ?? currentTitle.infoUrl);
+        setProviderItems(providers);
+        setProvidersLink(providersBody.tmdb_link ?? `https://www.themoviedb.org/${currentTitle.tmdbType}/${currentTitle.tmdbId}`);
+
+        if (currentTitle.tmdbType === "movie") {
+          const detailsRes = await fetch(
+            `/api/tmdb/details?type=movie&id=${currentTitle.tmdbId}`
+          );
+          const detailsBody = (await detailsRes.json()) as DetailsResponse;
+          if (!alive || !detailsRes.ok) return;
+          if (isLikelyInTheaters(detailsBody.release_date ?? null)) {
+            setIsInTheaters(true);
+          }
+        }
       } catch {
-        // fallback link handled below
+        // fallback link already set
       } finally {
         if (alive) setIsLoadingProviders(false);
       }
@@ -288,27 +285,20 @@ export default function RatePage() {
       alive = false;
       setIsLoadingProviders(false);
     };
-  }, [currentTitle?.id, currentTitle?.tmdbId, currentTitle?.tmdbType, currentTitle?.infoUrl]);
+  }, [currentTitle?.id, currentTitle?.tmdbId, currentTitle?.tmdbType, currentTitle?.name, currentTitle?.type]);
 
-  const progressLabel = useMemo(() => {
-    const total = unratedTitles.length;
-    if (!member) return "";
-    return total === 0 ? "All caught up" : `${currentIndex + 1} of ${total}`;
-  }, [unratedTitles.length, currentIndex, member]);
-
-  async function advance(ratedTitleId?: string) {
+  async function advance(currentTitleId: string) {
     if (!member) return;
-    if (ratedTitleId && group?.settings.ratingMode !== "shortlist") {
-      if (!group) return;
-      consumeUpcomingTitle(groupId, member.id, ratedTitleId);
-      const queue = getUpcomingQueue(groupId, member.id);
-      setUnratedTitles(queue.map(mapQueueToRateTitle));
-      if (queue.length <= 2) {
+
+    if (!isCustomListMode) {
+      consumeUpcomingTitle(groupId, member.id, currentTitleId);
+      let queue = getUpcomingQueue(groupId, member.id);
+      if (queue.length <= 2 && group) {
         setIsRefreshingQueue(true);
-        const refilled = await ensureEndlessQueue(groupId, member.id, group.settings);
-        setUnratedTitles(refilled.map(mapQueueToRateTitle));
+        queue = await ensureEndlessQueue(groupId, member.id, group.settings);
         setIsRefreshingQueue(false);
       }
+      setUnratedTitles(queue.map(mapQueueToRateTitle));
       setCurrentIndex(0);
       setCurrentStars(0);
       return;
@@ -318,12 +308,40 @@ export default function RatePage() {
     setCurrentIndex((i) => Math.min(i + 1, unratedTitles.length));
   }
 
-  async function rate(value: RatingValue) {
-    if (!member || !currentTitle) return;
-    await setRatingValue(groupId, member.id, currentTitle.id, value);
-    setRatedCount((c) => c + 1);
+  async function applyRating(value: RatingValue) {
+    if (!member || !currentTitle || !group) return;
+    const existing = loadRatings(groupId, member.id)[currentTitle.id] as RatingValue | undefined;
+    setHistory((prev) => [
+      ...prev,
+      {
+        title: currentTitle,
+        previousValue: existing,
+        mode: isCustomListMode ? "shortlist" : "endless",
+        indexBefore: currentIndex,
+      },
+    ]);
 
+    await setRatingValue(groupId, member.id, currentTitle.id, value);
     await advance(currentTitle.id);
+  }
+
+  async function onUndo() {
+    if (!member || history.length === 0) return;
+    const entry = history[history.length - 1];
+    setHistory((prev) => prev.slice(0, -1));
+
+    if (entry.previousValue !== undefined) {
+      await setRatingValue(groupId, member.id, entry.title.id, entry.previousValue);
+    }
+
+    if (entry.mode === "endless") {
+      setUnratedTitles((prev) => [entry.title, ...prev.filter((item) => item.id !== entry.title.id)]);
+      setCurrentIndex(0);
+    } else {
+      setCurrentIndex(Math.max(0, entry.indexBefore));
+    }
+
+    setCurrentStars(entry.previousValue && entry.previousValue > 0 ? entry.previousValue : 0);
   }
 
   if (isBootstrapping) {
@@ -334,6 +352,22 @@ export default function RatePage() {
           badge="Please wait"
           description="Getting your group and member details ready."
         />
+      </AppShell>
+    );
+  }
+
+  if (authBlocked) {
+    return (
+      <AppShell>
+        <Card>
+          <CardTitle>Authentication required</CardTitle>
+          <div className="mt-2">
+            <Muted>We could not start an anonymous session. Please retry.</Muted>
+          </div>
+          <div className="mt-4">
+            <Button onClick={() => setAuthRetryKey((v) => v + 1)}>Retry</Button>
+          </div>
+        </Card>
       </AppShell>
     );
   }
@@ -356,208 +390,37 @@ export default function RatePage() {
     return (
       <AppShell>
         <StateCard
-          title="Join from hub first"
+          title="Join from Home first"
           badge="Members only"
-          description="Open the group hub, join with your name, then return here to rate."
+          description="Open group Home, join with your name, then return here to rate."
           actionHref={`/g/${groupId}`}
-          actionLabel="Go to hub"
+          actionLabel="Go to Home"
           actionVariant="secondary"
         />
       </AppShell>
     );
   }
 
-  if (!member || redirectingToHub) {
+  if (!member || redirectingToHome) {
     return (
       <AppShell>
         <StateCard
-          title="Opening group hub"
+          title="Opening group home"
           badge="Please wait"
-          description="You need to join from the hub before rating."
+          description="You need to join from Home before rating."
           actionHref={`/g/${groupId}`}
-          actionLabel="Go to hub"
+          actionLabel="Go to Home"
           actionVariant="secondary"
         />
       </AppShell>
     );
   }
 
-  return (
-    <AppShell>
-      {Toast}
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="truncate text-2xl font-semibold tracking-tight">Rate</h1>
-            <div className="mt-1 text-sm text-white/60">
-              {group.name} | {member.name}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Pill>{ratingModeLabel(group.settings)}</Pill>
-            <Pill>{progressLabel}</Pill>
-            <Pill>{ratedCount} rated</Pill>
-            {group.settings.ratingMode !== "shortlist" && isRefreshingQueue ? <Pill>Updating queue...</Pill> : null}
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={() => setShowInvite((v) => !v)}>
-            Invite
-          </Button>
-          <Button variant="ghost" onClick={() => router.push(`/g/${groupId}`)}>
-            Hub
-          </Button>
-          <Button variant="ghost" onClick={() => router.push(`/g/${groupId}/results`)}>
-            Results
-          </Button>
-        </div>
-
-        {showInvite ? (
-          <Card>
-            <CardTitle>Invite link</CardTitle>
-            <div className="mt-3 space-y-3">
-              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3 text-sm text-white/85">
-                <div className="break-all">{inviteLink}</div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  onClick={async () => {
-                    await navigator.clipboard.writeText(inviteLink);
-                    show("Invite link copied");
-                  }}
-                >
-                  Copy link
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={async () => {
-                    if (navigator.share) {
-                      try {
-                        await navigator.share({ title: "ChooseAMovie", url: inviteLink });
-                      } catch {
-                        // user canceled
-                      }
-                    } else {
-                      await navigator.clipboard.writeText(inviteLink);
-                      show("Copied (share not supported)");
-                    }
-                  }}
-                >
-                  Share
-                </Button>
-              </div>
-              <Muted>Share this link so everyone joins the same group.</Muted>
-            </div>
-          </Card>
-        ) : null}
-
-        {currentTitle ? (
-          <div className="space-y-4">
-            <PosterCard title={currentTitle} />
-
-            <Card>
-              <CardTitle>Where to watch</CardTitle>
-              <div className="mt-3 space-y-3">
-                {isLoadingProviders ? (
-                  <Muted>Checking US providers...</Muted>
-                ) : providerLogos.length > 0 ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    {providerLogos.map((provider) => (
-                      <div
-                        key={provider.provider_id}
-                        className="h-10 w-10 overflow-hidden rounded-md border border-white/10 bg-white/5"
-                        title={provider.provider_name}
-                      >
-                        <img
-                          src={`https://image.tmdb.org/t/p/w92${provider.logo_path}`}
-                          alt={provider.provider_name}
-                          className="h-full w-full object-cover"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-
-                {providerLogos.length === 0 && !isLoadingProviders ? (
-                  <a
-                    href={providersLink || currentTitle.infoUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-sm font-semibold text-white/90 underline underline-offset-4"
-                  >
-                    Search online
-                  </a>
-                ) : (
-                  <a
-                    href={providersLink || currentTitle.infoUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-white/70 underline underline-offset-4"
-                  >
-                    View full availability
-                  </a>
-                )}
-
-                <Button variant="ghost" onClick={() => setShowDetails((v) => !v)}>
-                  {showDetails ? "Hide details" : "Details"}
-                </Button>
-
-                {showDetails ? (
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
-                    <div className="font-semibold text-white">{currentTitle.name}</div>
-                    <div className="mt-1 text-white/70">
-                      {currentTitle.year ?? "Unknown year"} | {currentTitle.type === "movie" ? "Movie" : "Show"}
-                    </div>
-                    {currentTitle.description ? (
-                      <div className="mt-2 text-white/70">{currentTitle.description}</div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            </Card>
-
-            <Card>
-              <CardTitle>How interested are you?</CardTitle>
-              <div className="mt-4 space-y-4">
-                <StarRating
-                  value={currentStars}
-                  onChange={(v) => setCurrentStars(v)}
-                  showLabels
-                  showNumericHint
-                />
-
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <Button
-                    onClick={() => {
-                      if (currentStars === 0) {
-                        show("Pick stars first, or skip");
-                        return;
-                      }
-                      void rate(currentStars as RatingValue);
-                      show("Saved");
-                    }}
-                  >
-                    Save rating
-                  </Button>
-
-                  <Button
-                    variant="secondary"
-                    onClick={() => {
-                      void rate(0);
-                      show("Skipped");
-                    }}
-                  >
-                    Skip
-                  </Button>
-                </div>
-
-                <Muted>Use Skip when you do not know a title or do not want to rate it.</Muted>
-              </div>
-            </Card>
-          </div>
-        ) : (
+  if (!currentTitle) {
+    return (
+      <AppShell>
+        <div className="space-y-6">
+          <GroupTabs groupId={groupId} />
           <Card>
             <CardTitle>You are caught up</CardTitle>
             <div className="mt-2">
@@ -566,11 +429,143 @@ export default function RatePage() {
             <div className="mt-4 flex flex-wrap gap-2">
               <Button onClick={() => router.push(`/g/${groupId}/results`)}>View results</Button>
               <Button variant="secondary" onClick={() => router.push(`/g/${groupId}`)}>
-                Hub
+                Home
               </Button>
             </div>
           </Card>
-        )}
+        </div>
+      </AppShell>
+    );
+  }
+
+  const googleQuery = `${currentTitle.name} ${currentTitle.type === "movie" ? "movie" : "show"}`;
+  const posterUrl = currentTitle.posterPath ? `https://image.tmdb.org/t/p/w342${currentTitle.posterPath}` : null;
+
+  return (
+    <AppShell>
+      <div className="space-y-4">
+        <GroupTabs groupId={groupId} />
+
+        {isCustomListMode ? (
+          <div className="flex justify-center">
+            <Pill>{remainingCount} left</Pill>
+          </div>
+        ) : null}
+
+        <div className="grid gap-4 md:grid-cols-[280px_1fr] md:items-start">
+          <Card>
+            <PosterImage
+              src={posterUrl}
+              alt={currentTitle.name}
+              className="mx-auto w-full max-w-[260px] rounded-xl"
+              roundedClassName="rounded-xl"
+            />
+            {isRefreshingQueue ? <div className="mt-2 text-xs text-white/55">Updating queue...</div> : null}
+          </Card>
+
+          <div className="space-y-4">
+            <Card>
+              <CardTitle>{currentTitle.name}</CardTitle>
+              <div className="mt-2 min-h-[72px] text-sm text-white/70" style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                {currentTitle.description ?? "No overview available yet."}
+              </div>
+              <div className="mt-3">
+                <a
+                  href={`https://www.google.com/search?q=${encodeURIComponent(googleQuery)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <Button variant="secondary">More info</Button>
+                </a>
+              </div>
+            </Card>
+
+            <Card>
+              <CardTitle>Rate this title</CardTitle>
+              <div className="mt-4 min-h-[138px] space-y-4">
+                <StarRating
+                  value={currentStars}
+                  onChange={(value) => {
+                    setCurrentStars(value);
+                    if (value > 0) {
+                      void applyRating(value as RatingValue);
+                    }
+                  }}
+                  showLabels
+                  showNumericHint
+                />
+
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Button variant="secondary" onClick={() => void applyRating(0)}>
+                    Skip
+                  </Button>
+                  <Button variant="ghost" onClick={() => void onUndo()} disabled={history.length === 0}>
+                    Undo
+                  </Button>
+                </div>
+              </div>
+            </Card>
+
+            <Card>
+              <CardTitle>Where to watch</CardTitle>
+              <div className="mt-3 space-y-3 min-h-[112px]">
+                {isInTheaters ? (
+                  <div className="inline-flex rounded-full border border-[rgb(var(--yellow))]/50 bg-[rgb(var(--yellow))]/15 px-3 py-1 text-xs font-semibold text-[rgb(var(--yellow))]">
+                    In theaters
+                  </div>
+                ) : null}
+
+                {isLoadingProviders ? <Muted>Checking US providers...</Muted> : null}
+
+                {!isLoadingProviders && providerItems.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {providerItems.map((provider) => (
+                      <a
+                        key={provider.provider_id}
+                        href={providersLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2 py-1 hover:bg-white/10"
+                        title={provider.provider_name}
+                      >
+                        {provider.logo_path ? (
+                          <img
+                            src={`https://image.tmdb.org/t/p/w92${provider.logo_path}`}
+                            alt={provider.provider_name}
+                            className="h-6 w-6 rounded object-contain"
+                          />
+                        ) : null}
+                        <span className="text-xs text-white/85">{provider.provider_name}</span>
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
+
+                {!isLoadingProviders && providerItems.length === 0 ? (
+                  <a
+                    href={providersLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sm font-semibold text-white/90 underline underline-offset-4"
+                  >
+                    Search online
+                  </a>
+                ) : null}
+
+                <Button variant="ghost" onClick={() => setShowDetails((v) => !v)}>
+                  {showDetails ? "Hide details" : "Details"}
+                </Button>
+
+                {showDetails ? (
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/75">
+                    <div>{currentTitle.year ?? "Unknown year"} | {currentTitle.type === "movie" ? "Movie" : "Show"}</div>
+                    <div className="mt-1">{currentTitle.genre ?? "General"}</div>
+                  </div>
+                ) : null}
+              </div>
+            </Card>
+          </div>
+        </div>
       </div>
     </AppShell>
   );

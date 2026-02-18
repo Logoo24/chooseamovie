@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
+import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
 import { Button, Card, CardTitle, Input, Muted, Pill } from "@/components/ui";
 import { customListLabel, isCustomListMode } from "@/lib/groupLabels";
@@ -17,7 +18,7 @@ import {
   type ShortlistMediaType,
   type ShortlistSnapshot,
 } from "@/lib/shortlistStore";
-import { getCurrentUserId } from "@/lib/supabase";
+import { ensureAnonymousSession, getCurrentUserId } from "@/lib/supabase";
 import { buildTmdbTitleKey } from "@/lib/tmdbTitleKey";
 import { upsertTitleSnapshot } from "@/lib/titleCacheStore";
 import { loadGroup, saveGroup, type Group } from "@/lib/storage";
@@ -39,7 +40,7 @@ type SearchResponse = {
   error?: { message?: string };
 };
 
-const POSTER_BASE = "https://image.tmdb.org/t/p/w92";
+const POSTER_BASE = "https://image.tmdb.org/t/p/w185";
 const SUGGESTIONS_KEY = (groupId: string) => `chooseamovie:suggestions:${groupId}`;
 
 function titleFromSearch(item: SearchItem) {
@@ -79,6 +80,8 @@ export default function CustomListPage() {
 
   const [group, setGroup] = useState<Group | null>(null);
   const [isLoadingGroup, setIsLoadingGroup] = useState(true);
+  const [authBlocked, setAuthBlocked] = useState(false);
+  const [authRetryKey, setAuthRetryKey] = useState(0);
   const [isHost, setIsHost] = useState(false);
 
   const [query, setQuery] = useState("");
@@ -99,8 +102,17 @@ export default function CustomListPage() {
   useEffect(() => {
     let alive = true;
     setIsLoadingGroup(true);
+    setAuthBlocked(false);
 
     (async () => {
+      const anonUserId = await ensureAnonymousSession();
+      if (!alive) return;
+      if (!anonUserId) {
+        setAuthBlocked(true);
+        setIsLoadingGroup(false);
+        return;
+      }
+
       const uid = await getCurrentUserId();
       const loaded = await getGroup(groupId);
       if (!alive) return;
@@ -118,7 +130,7 @@ export default function CustomListPage() {
     return () => {
       alive = false;
     };
-  }, [groupId]);
+  }, [groupId, authRetryKey]);
 
   useEffect(() => {
     let alive = true;
@@ -236,7 +248,7 @@ export default function CustomListPage() {
   }, [debouncedQuery, group]);
 
   const shortlistKeys = useMemo(() => {
-    return new Set(shortlist.map((item) => item.title_key));
+    return new Set(shortlist.map((item) => item.title_id));
   }, [shortlist]);
 
   useEffect(() => {
@@ -315,7 +327,7 @@ export default function CustomListPage() {
     try {
       await replaceShortlist(
         groupId,
-        shortlist.map((item) => ({ titleKey: item.title_key, snapshot: item.title_snapshot }))
+        shortlist.map((item) => ({ titleKey: item.title_id, snapshot: item.title_snapshot }))
       );
 
       const nextSettings = {
@@ -343,6 +355,22 @@ export default function CustomListPage() {
           badge="Please wait"
           description="Checking your group and host access."
         />
+      </AppShell>
+    );
+  }
+
+  if (authBlocked) {
+    return (
+      <AppShell>
+        <Card>
+          <CardTitle>Authentication required</CardTitle>
+          <div className="mt-2">
+            <Muted>We could not start an anonymous session. Please retry.</Muted>
+          </div>
+          <div className="mt-4">
+            <Button onClick={() => setAuthRetryKey((v) => v + 1)}>Retry</Button>
+          </div>
+        </Card>
       </AppShell>
     );
   }
@@ -445,23 +473,15 @@ export default function CustomListPage() {
             <div className="mt-3 space-y-2">
               {shortlist.map((item) => (
                 <div
-                  key={item.title_key}
+                  key={item.title_id}
                   className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-[rgb(var(--card))] p-2"
                 >
                   <div className="flex min-w-0 items-center gap-3">
-                    <div className="h-14 w-10 shrink-0 overflow-hidden rounded border border-white/10 bg-white/5">
-                      {item.title_snapshot.poster_path ? (
-                        <img
-                          src={`${POSTER_BASE}${item.title_snapshot.poster_path}`}
-                          alt={item.title_snapshot.title}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-[10px] text-white/50">
-                          No art
-                        </div>
-                      )}
-                    </div>
+                    <PosterImage
+                      src={item.title_snapshot.poster_path ? `${POSTER_BASE}${item.title_snapshot.poster_path}` : null}
+                      alt={item.title_snapshot.title}
+                      className="w-10 shrink-0"
+                    />
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold text-white">
                         {item.title_snapshot.title}
@@ -474,8 +494,8 @@ export default function CustomListPage() {
                   </div>
                   <Button
                     variant="ghost"
-                    onClick={() => void onRemove(item.title_key)}
-                    disabled={Boolean(pendingKeys[item.title_key])}
+                    onClick={() => void onRemove(item.title_id)}
+                    disabled={Boolean(pendingKeys[item.title_id])}
                   >
                     Remove
                   </Button>
@@ -511,19 +531,11 @@ export default function CustomListPage() {
                     className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-[rgb(var(--card))] p-2"
                   >
                     <div className="flex min-w-0 items-center gap-3">
-                      <div className="h-14 w-10 shrink-0 overflow-hidden rounded border border-white/10 bg-white/5">
-                        {item.poster_path ? (
-                          <img
-                            src={`${POSTER_BASE}${item.poster_path}`}
-                            alt={title}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-[10px] text-white/50">
-                            No art
-                          </div>
-                        )}
-                      </div>
+                      <PosterImage
+                        src={item.poster_path ? `${POSTER_BASE}${item.poster_path}` : null}
+                        alt={title}
+                        className="w-10 shrink-0"
+                      />
                       <div className="min-w-0">
                         <div className="truncate text-sm font-semibold text-white">{title}</div>
                         <div className="mt-1 flex items-center gap-2 text-xs text-white/65">

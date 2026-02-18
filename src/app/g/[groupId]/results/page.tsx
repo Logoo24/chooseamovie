@@ -3,16 +3,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
+import { GroupTabs } from "@/components/GroupTabs";
+import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
 import { Button, Card, CardTitle, Muted, Pill } from "@/components/ui";
-import { getGroupRatings, type GroupRatingsResult } from "@/lib/ratingStore";
 import { getActiveMember } from "@/lib/ratings";
+import { listGroupMembers } from "@/lib/memberStore";
 import { getShortlist, type ShortlistItem, type ShortlistSnapshot } from "@/lib/shortlistStore";
 import { loadGroup, type Group } from "@/lib/storage";
+import { ensureAnonymousSession } from "@/lib/supabase";
 import { getTitleSnapshots, type TitleSnapshot, upsertTitleSnapshot } from "@/lib/titleCacheStore";
 import { parseTmdbTitleKey } from "@/lib/tmdbTitleKey";
+import { getGroupTopTitles, type GroupTopTitle } from "@/lib/topTitlesStore";
 import { TITLES, titleSearchUrl } from "@/lib/titles";
-import { type AggregatedRow } from "@/lib/ratings";
+import { type Member } from "@/lib/ratings";
 
 function starsText(avg: number) {
   if (!avg) return "-";
@@ -21,11 +25,13 @@ function starsText(avg: number) {
 
 function starsVisual(avg: number) {
   const filled = Math.max(0, Math.min(5, Math.round(avg)));
-  return `${"*".repeat(filled)}${".".repeat(5 - filled)}`;
+  const full = String.fromCharCode(9733);
+  const empty = String.fromCharCode(9734);
+  return `${full.repeat(filled)}${empty.repeat(5 - filled)}`;
 }
 
 function resolveShortlistSnapshotByTitleId(titleId: string, shortlist: ShortlistItem[]) {
-  const direct = shortlist.find((item) => item.title_key === titleId);
+  const direct = shortlist.find((item) => item.title_id === titleId);
   if (direct) return direct.title_snapshot;
   if (!titleId.startsWith("sl:")) return null;
   const parts = titleId.split(":");
@@ -118,7 +124,7 @@ function ResultCard({
   row,
   resolved,
 }: {
-  row: AggregatedRow;
+  row: GroupTopTitle;
   resolved: ResolvedTitle;
 }) {
   const posterUrl = resolved.posterPath
@@ -128,13 +134,7 @@ function ResultCard({
   return (
     <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
       <div className="flex items-start gap-3">
-        <div className="h-20 w-14 shrink-0 overflow-hidden rounded-md border border-white/10 bg-white/5">
-          {posterUrl ? (
-            <img src={posterUrl} alt={resolved.title} className="h-full w-full object-cover" />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-[10px] text-white/45">No art</div>
-          )}
-        </div>
+        <PosterImage src={posterUrl} alt={resolved.title} className="w-14 shrink-0" />
 
         <div className="min-w-0 flex-1">
           <a
@@ -166,7 +166,12 @@ export default function ResultsPage() {
   const router = useRouter();
 
   const [group, setGroup] = useState<Group | null>(null);
-  const [rows, setRows] = useState<GroupRatingsResult | null>(null);
+  const [authBlocked, setAuthBlocked] = useState(false);
+  const [authRetryKey, setAuthRetryKey] = useState(0);
+  const [topRows, setTopRows] = useState<GroupTopTitle[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [readError, setReadError] = useState<"none" | "network">("none");
   const [isLoadingRows, setIsLoadingRows] = useState(true);
   const [isUpdating, setIsUpdating] = useState(false);
   const [activeMember, setActiveMember] = useState<ReturnType<typeof getActiveMember>>(null);
@@ -217,6 +222,7 @@ export default function ResultsPage() {
     setIsLoadingRows(true);
     setGroup(loadGroup(groupId));
     setActiveMember(getActiveMember(groupId));
+    setAuthBlocked(false);
 
     const fetchRatings = async (opts?: { background?: boolean }) => {
       if (inFlight) return;
@@ -225,9 +231,29 @@ export default function ResultsPage() {
       if (background) beginUpdatingIndicator();
 
       try {
-        const loaded = await getGroupRatings(groupId);
+        const anonUserId = await ensureAnonymousSession();
         if (!alive) return;
-        setRows(loaded);
+        if (!anonUserId) {
+          setAuthBlocked(true);
+          setIsLoadingRows(false);
+          return;
+        }
+
+        const [topLoaded, membersLoaded] = await Promise.all([
+          getGroupTopTitles(groupId),
+          listGroupMembers(groupId),
+        ]);
+        if (!alive) return;
+
+        setAccessDenied(Boolean(topLoaded.accessDenied || membersLoaded.error === "forbidden"));
+        setReadError(
+          topLoaded.error === "network" || membersLoaded.error === "network" ? "network" : "none"
+        );
+        setMembers(membersLoaded.members);
+        setTopRows((current) => {
+          if (topLoaded.rows.length === 0 && current.length > 0) return current;
+          return topLoaded.rows;
+        });
       } finally {
         if (!alive) return;
         setIsLoadingRows(false);
@@ -251,7 +277,23 @@ export default function ResultsPage() {
       }
       window.clearInterval(intervalId);
     };
-  }, [groupId]);
+  }, [groupId, authRetryKey]);
+
+  if (authBlocked) {
+    return (
+      <AppShell>
+        <Card>
+          <CardTitle>Authentication required</CardTitle>
+          <div className="mt-2">
+            <Muted>We could not start an anonymous session. Please retry.</Muted>
+          </div>
+          <div className="mt-4">
+            <Button onClick={() => setAuthRetryKey((v) => v + 1)}>Retry</Button>
+          </div>
+        </Card>
+      </AppShell>
+    );
+  }
 
   useEffect(() => {
     let alive = true;
@@ -260,9 +302,9 @@ export default function ResultsPage() {
       if (!alive) return;
       const map: Record<string, ShortlistSnapshot> = {};
       for (const item of shortlist) {
-        map[item.title_key] = item.title_snapshot;
+        map[item.title_id] = item.title_snapshot;
       }
-      const slRows = (rows?.rows ?? []).map((r) => r.titleId).filter((id) => id.startsWith("sl:"));
+      const slRows = topRows.map((r) => r.titleId).filter((id) => id.startsWith("sl:"));
       for (const titleId of slRows) {
         const snapshot = resolveShortlistSnapshotByTitleId(titleId, shortlist);
         if (snapshot) map[titleId] = snapshot;
@@ -272,29 +314,25 @@ export default function ResultsPage() {
     return () => {
       alive = false;
     };
-  }, [groupId, rows?.rows]);
+  }, [groupId, topRows]);
 
   useEffect(() => {
     let alive = true;
-    const titleIds = (rows?.rows ?? []).map((row) => row.titleId);
-    if (titleIds.length === 0) {
-      setTitleCache({});
-      return;
-    }
+    const titleIds = topRows.map((row) => row.titleId);
+    if (titleIds.length === 0) return;
     (async () => {
       const snapshots = await getTitleSnapshots(titleIds);
       if (!alive) return;
-      setTitleCache(snapshots);
+      setTitleCache((current) => ({ ...current, ...snapshots }));
     })();
     return () => {
       alive = false;
     };
-  }, [rows?.rows]);
+  }, [topRows]);
 
   const top = useMemo(() => {
-    if (!rows) return [];
-    return rows.rows.slice(0, 10);
-  }, [rows]);
+    return topRows.slice(0, 10);
+  }, [topRows]);
 
   const resolvedTop = useMemo(() => {
     if (!group) return [];
@@ -345,9 +383,7 @@ export default function ResultsPage() {
     );
   }
 
-  const members = rows?.members ?? [];
-  const accessDenied = rows?.accessDenied === true;
-  const networkError = rows?.error === "network" && members.length === 0 && top.length === 0;
+  const networkError = readError === "network" && members.length === 0 && top.length === 0;
 
   if (accessDenied) {
     return (
@@ -358,10 +394,10 @@ export default function ResultsPage() {
           description={
             activeMember
               ? "Your current profile does not have access to shared results for this group."
-              : "Join this group from the hub first, then come back to results."
+              : "Join this group from Home first, then come back to results."
           }
           actionHref={`/g/${groupId}`}
-          actionLabel="Go to hub"
+          actionLabel="Go to Home"
           actionVariant="secondary"
         />
       </AppShell>
@@ -376,7 +412,7 @@ export default function ResultsPage() {
           badge="Try again"
           description="We could not refresh shared results. Check your connection and reopen this page."
           actionHref={`/g/${groupId}`}
-          actionLabel="Back to hub"
+          actionLabel="Back to Home"
           actionVariant="secondary"
         />
       </AppShell>
@@ -386,6 +422,8 @@ export default function ResultsPage() {
   return (
     <AppShell>
       <div className="space-y-6">
+        <GroupTabs groupId={groupId} />
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <h1 className="truncate text-2xl font-semibold tracking-tight">Results</h1>
@@ -422,7 +460,7 @@ export default function ResultsPage() {
             ) : resolvedTop.length === 0 ? (
               <div className="py-2 text-sm text-white/70">No ratings yet. Go rate a few titles.</div>
             ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {resolvedTop.map((item) => (
                   <ResultCard key={item.row.titleId} row={item.row} resolved={item.resolved} />
                 ))}
@@ -433,7 +471,7 @@ export default function ResultsPage() {
           <div className="mt-4 flex flex-wrap gap-2">
             <Button onClick={() => router.push(`/g/${groupId}/rate`)}>Keep rating</Button>
             <Button variant="secondary" onClick={() => router.push(`/g/${groupId}`)}>
-              Hub
+              Home
             </Button>
           </div>
         </Card>

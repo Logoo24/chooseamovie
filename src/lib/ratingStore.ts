@@ -36,11 +36,11 @@ export async function setRating(
   groupId: string,
   memberId: string,
   titleId: string,
-  value: RatingValue
+  rating: RatingValue
 ): Promise<void> {
   // Keep local state responsive even when Supabase is slow/unavailable.
   const local = loadRatings(groupId, memberId);
-  local[titleId] = value;
+  local[titleId] = rating;
   saveRatings(groupId, memberId, local);
 
   if (!supabase) return;
@@ -51,7 +51,7 @@ export async function setRating(
         group_id: groupId,
         member_id: memberId,
         title_id: titleId,
-        value,
+        rating,
       },
       { onConflict: "group_id,member_id,title_id" }
     );
@@ -100,7 +100,7 @@ export async function getGroupRatings(groupId: string): Promise<GroupRatingsResu
   try {
     const [membersRes, ratingsRes] = await Promise.all([
       supabase.from(MEMBERS_TABLE).select("id, name, created_at").eq("group_id", groupId),
-      supabase.from(RATINGS_TABLE).select("member_id, title_id, value").eq("group_id", groupId),
+      supabase.from(RATINGS_TABLE).select("member_id, title_id, rating").eq("group_id", groupId),
     ]);
 
     if (membersRes.error || ratingsRes.error) {
@@ -134,7 +134,7 @@ export async function getGroupRatings(groupId: string): Promise<GroupRatingsResu
 
     for (const r of ratingsRes.data ?? []) {
       if (!perMember[r.member_id]) perMember[r.member_id] = {};
-      perMember[r.member_id][r.title_id] = r.value as RatingValue;
+      perMember[r.member_id][r.title_id] = r.rating as RatingValue;
     }
 
     return { ...aggregateFromRecords(members, perMember), accessDenied: false, error: "none" };

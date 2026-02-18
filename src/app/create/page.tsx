@@ -3,7 +3,6 @@
 import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
-import { StorageModeBanner } from "@/components/StorageModeBanner";
 import { Button, Card, CardTitle, Input, Muted, Pill } from "@/components/ui";
 import { createGroup } from "@/lib/groupStore";
 import { markHostForGroup } from "@/lib/hostStore";
@@ -119,8 +118,6 @@ export default function CreateGroupPage() {
           </div>
           <Pill>Setup wizard</Pill>
         </div>
-
-        <StorageModeBanner />
 
         <div className="overflow-hidden rounded-2xl">
           <div

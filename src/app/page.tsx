@@ -30,10 +30,12 @@ export default function Home() {
   const [confirmState, setConfirmState] = useState<ConfirmState>(null);
   const [isActing, setIsActing] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"info" | "success" | "error">("info");
 
   async function loadGroups() {
     setIsLoadingGroups(true);
     setMessage("");
+    setMessageTone("info");
 
     const remote = await getMyGroups();
     const byId = new Map<string, GroupCard>();
@@ -78,8 +80,10 @@ export default function Home() {
 
     if (remote.error === "network") {
       setMessage("Some groups may be missing while offline.");
+      setMessageTone("info");
     } else if (remote.error === "forbidden") {
       setMessage("Some groups are hidden due to access rules.");
+      setMessageTone("info");
     }
 
     setIsLoadingGroups(false);
@@ -97,14 +101,41 @@ export default function Home() {
 
     try {
       if (confirmState.action === "delete") {
-        await deleteGroup(confirmState.groupId);
+        const result = await deleteGroup(confirmState.groupId);
+        if (result.error !== "none") {
+          setConfirmState(null);
+          setMenuOpenFor(null);
+          setMessageTone("error");
+          setMessage(
+            result.error === "forbidden"
+              ? "You do not have permission to delete this group."
+              : "Could not delete the group right now. Please try again."
+          );
+          return;
+        }
+        setGroups((current) => current.filter((g) => g.id !== confirmState.groupId));
+        setMessageTone("success");
+        setMessage(`Deleted "${confirmState.groupName}".`);
       } else {
-        await leaveGroup(confirmState.groupId);
+        const result = await leaveGroup(confirmState.groupId);
+        if (result.error !== "none") {
+          setConfirmState(null);
+          setMenuOpenFor(null);
+          setMessageTone("error");
+          setMessage(
+            result.error === "forbidden"
+              ? "You do not have permission to leave this group."
+              : "Could not leave the group right now. Please try again."
+          );
+          return;
+        }
+        setGroups((current) => current.filter((g) => g.id !== confirmState.groupId));
+        setMessageTone("success");
+        setMessage(`Left "${confirmState.groupName}".`);
       }
 
       setConfirmState(null);
       setMenuOpenFor(null);
-      await loadGroups();
     } finally {
       setIsActing(false);
     }
@@ -147,7 +178,16 @@ export default function Home() {
           </div>
 
           {message ? (
-            <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/70">
+            <div
+              className={[
+                "mt-3 rounded-xl border p-3 text-sm",
+                messageTone === "error"
+                  ? "border-red-400/40 bg-red-500/10 text-red-100"
+                  : messageTone === "success"
+                    ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100"
+                    : "border-white/10 bg-white/5 text-white/70",
+              ].join(" ")}
+            >
               {message}
             </div>
           ) : null}

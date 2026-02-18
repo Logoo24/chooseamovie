@@ -14,7 +14,7 @@ export type ShortlistSnapshot = {
 
 export type ShortlistItem = {
   group_id: string;
-  title_key: string;
+  title_id: string;
   title_snapshot: ShortlistSnapshot;
   position: number;
 };
@@ -24,8 +24,17 @@ function loadLocalShortlist(groupId: string): ShortlistItem[] {
   const raw = localStorage.getItem(LOCAL_SHORTLIST_KEY(groupId));
   if (!raw) return [];
   try {
-    const parsed = JSON.parse(raw) as ShortlistItem[];
-    return parsed.sort((a, b) => a.position - b.position);
+    const parsed = JSON.parse(raw) as Array<
+      ShortlistItem & { title_key?: string; title_snapshot?: ShortlistSnapshot }
+    >;
+    return parsed
+      .map((item) => ({
+        ...item,
+        title_id: item.title_id ?? item.title_key ?? "",
+        title_snapshot: item.title_snapshot,
+      }))
+      .filter((item) => item.title_id && item.title_snapshot)
+      .sort((a, b) => a.position - b.position);
   } catch {
     return [];
   }
@@ -44,7 +53,7 @@ function normalize(items: ShortlistItem[]) {
 
 function upsertLocalItem(groupId: string, item: ShortlistItem) {
   const local = loadLocalShortlist(groupId);
-  const idx = local.findIndex((x) => x.title_key === item.title_key);
+  const idx = local.findIndex((x) => x.title_id === item.title_id);
   if (idx >= 0) {
     local[idx] = item;
   } else {
@@ -59,17 +68,26 @@ export async function getShortlist(groupId: string): Promise<ShortlistItem[]> {
   await ensureAnonymousSession();
 
   try {
-    const { data, error } = await supabase
+    const primary = await supabase
       .from(SHORTLIST_TABLE)
-      .select("group_id, title_key, title_snapshot, position")
+      .select("group_id, title_id, title_snapshot, position")
       .eq("group_id", groupId)
       .order("position", { ascending: true });
 
+    const fallback = primary.error
+      ? await supabase
+          .from(SHORTLIST_TABLE)
+          .select("group_id, title_key, title_snapshot, position")
+          .eq("group_id", groupId)
+          .order("position", { ascending: true })
+      : null;
+    const data = !primary.error ? primary.data : fallback?.data;
+    const error = !primary.error ? null : fallback?.error;
     if (error) return loadLocalShortlist(groupId);
 
-    const rows: ShortlistItem[] = (data ?? []).map((row) => ({
+    const rows: ShortlistItem[] = ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
       group_id: row.group_id as string,
-      title_key: row.title_key as string,
+      title_id: (row.title_id as string | null) ?? (row.title_key as string) ?? "",
       title_snapshot: row.title_snapshot as ShortlistSnapshot,
       position: Number(row.position ?? 0) || 0,
     }));
@@ -89,14 +107,14 @@ export async function addToShortlist(
 ): Promise<void> {
   upsertLocalItem(groupId, {
     group_id: groupId,
-    title_key: titleKey,
+    title_id: titleKey,
     title_snapshot: snapshot,
     position: loadLocalShortlist(groupId).length + 1,
   });
 
   if (!supabase) {
     const local = loadLocalShortlist(groupId);
-    const existing = local.find((x) => x.title_key === titleKey);
+    const existing = local.find((x) => x.title_id === titleKey);
     if (existing) {
       existing.title_snapshot = snapshot;
       saveLocalShortlist(groupId, normalize(local));
@@ -104,7 +122,7 @@ export async function addToShortlist(
     }
     local.push({
       group_id: groupId,
-      title_key: titleKey,
+      title_id: titleKey,
       title_snapshot: snapshot,
       position: local.length + 1,
     });
@@ -119,7 +137,7 @@ export async function addToShortlist(
       .from(SHORTLIST_TABLE)
       .select("position")
       .eq("group_id", groupId)
-      .eq("title_key", titleKey)
+      .eq("title_id", titleKey)
       .maybeSingle();
 
     let position = Number(existing?.position ?? 0) || 0;
@@ -137,11 +155,11 @@ export async function addToShortlist(
     const { error } = await supabase.from(SHORTLIST_TABLE).upsert(
       {
         group_id: groupId,
-        title_key: titleKey,
+        title_id: titleKey,
         title_snapshot: snapshot,
         position,
       },
-      { onConflict: "group_id,title_key" }
+      { onConflict: "group_id,title_id" }
     );
 
     if (error) {
@@ -149,13 +167,13 @@ export async function addToShortlist(
     }
     upsertLocalItem(groupId, {
       group_id: groupId,
-      title_key: titleKey,
+      title_id: titleKey,
       title_snapshot: snapshot,
       position,
     });
   } catch {
     const local = loadLocalShortlist(groupId);
-    const existing = local.find((x) => x.title_key === titleKey);
+    const existing = local.find((x) => x.title_id === titleKey);
     if (existing) {
       existing.title_snapshot = snapshot;
       saveLocalShortlist(groupId, normalize(local));
@@ -163,7 +181,7 @@ export async function addToShortlist(
     }
     local.push({
       group_id: groupId,
-      title_key: titleKey,
+      title_id: titleKey,
       title_snapshot: snapshot,
       position: local.length + 1,
     });
@@ -174,11 +192,11 @@ export async function addToShortlist(
 export async function removeFromShortlist(groupId: string, titleKey: string): Promise<void> {
   saveLocalShortlist(
     groupId,
-    loadLocalShortlist(groupId).filter((x) => x.title_key !== titleKey)
+    loadLocalShortlist(groupId).filter((x) => x.title_id !== titleKey)
   );
 
   if (!supabase) {
-    const next = loadLocalShortlist(groupId).filter((x) => x.title_key !== titleKey);
+    const next = loadLocalShortlist(groupId).filter((x) => x.title_id !== titleKey);
     saveLocalShortlist(groupId, normalize(next));
     return;
   }
@@ -190,19 +208,19 @@ export async function removeFromShortlist(groupId: string, titleKey: string): Pr
       .from(SHORTLIST_TABLE)
       .delete()
       .eq("group_id", groupId)
-      .eq("title_key", titleKey);
+      .eq("title_id", titleKey);
 
     if (error) {
       throw error;
     }
   } catch {
-    const next = loadLocalShortlist(groupId).filter((x) => x.title_key !== titleKey);
+    const next = loadLocalShortlist(groupId).filter((x) => x.title_id !== titleKey);
     saveLocalShortlist(groupId, normalize(next));
   }
 }
 
 export async function reorderShortlist(groupId: string, titleKeys: string[]): Promise<void> {
-  const byKey = new Map(loadLocalShortlist(groupId).map((item) => [item.title_key, item]));
+  const byKey = new Map(loadLocalShortlist(groupId).map((item) => [item.title_id, item]));
   const localNext: ShortlistItem[] = [];
   for (const key of titleKeys) {
     const item = byKey.get(key);
@@ -225,7 +243,7 @@ export async function reorderShortlist(groupId: string, titleKeys: string[]): Pr
           .from(SHORTLIST_TABLE)
           .update({ position: index + 1 })
           .eq("group_id", groupId)
-          .eq("title_key", key)
+          .eq("title_id", key)
       )
     );
   } catch {
@@ -239,7 +257,7 @@ export async function replaceShortlist(
 ): Promise<void> {
   const next: ShortlistItem[] = items.map((item, index) => ({
     group_id: groupId,
-    title_key: item.titleKey,
+    title_id: item.titleKey,
     title_snapshot: item.snapshot,
     position: index + 1,
   }));
@@ -256,7 +274,7 @@ export async function replaceShortlist(
     await client.from(SHORTLIST_TABLE).delete().eq("group_id", groupId);
     if (next.length > 0) {
       const { error } = await client.from(SHORTLIST_TABLE).upsert(next, {
-        onConflict: "group_id,title_key",
+        onConflict: "group_id,title_id",
       });
       if (error) throw error;
     }

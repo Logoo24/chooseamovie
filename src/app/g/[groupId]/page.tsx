@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
+import { GroupTabs } from "@/components/GroupTabs";
+import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
-import { StorageModeBanner } from "@/components/StorageModeBanner";
 import { Button, Card, CardTitle, Input, Muted, Pill } from "@/components/ui";
 import { customListLabel, isCustomListMode, ratingModeLabel } from "@/lib/groupLabels";
 import { getGroup } from "@/lib/groupStore";
@@ -13,9 +14,10 @@ import { joinGroupMember, listGroupMembers, removeGroupMember } from "@/lib/memb
 import { getGroupRatings, type GroupRatingsResult } from "@/lib/ratingStore";
 import { getActiveMember, setActiveMember, type Member } from "@/lib/ratings";
 import { getShortlist, type ShortlistItem, type ShortlistSnapshot } from "@/lib/shortlistStore";
-import { getCurrentUserId } from "@/lib/supabase";
+import { ensureAnonymousSession, getCurrentUserId } from "@/lib/supabase";
 import { getTitleSnapshots, type TitleSnapshot, upsertTitleSnapshot } from "@/lib/titleCacheStore";
 import { parseTmdbTitleKey } from "@/lib/tmdbTitleKey";
+import { getGroupTopTitles, type GroupTopTitle } from "@/lib/topTitlesStore";
 import { TITLES, titleSearchUrl } from "@/lib/titles";
 import { type Group } from "@/lib/storage";
 
@@ -29,7 +31,7 @@ function ratingLabel(group: Group) {
 }
 
 function resolveShortlistSnapshotByTitleId(titleId: string, shortlist: ShortlistItem[]) {
-  const direct = shortlist.find((item) => item.title_key === titleId);
+  const direct = shortlist.find((item) => item.title_id === titleId);
   if (direct) return direct.title_snapshot;
   if (!titleId.startsWith("sl:")) return null;
   const parts = titleId.split(":");
@@ -126,10 +128,13 @@ export default function GroupHubPage() {
 
   const [group, setGroup] = useState<Group | null>(null);
   const [isLoadingGroup, setIsLoadingGroup] = useState(true);
+  const [authBlocked, setAuthBlocked] = useState(false);
+  const [authRetryKey, setAuthRetryKey] = useState(0);
   const [isHost, setIsHost] = useState(false);
   const [activeMember, setActiveMemberState] = useState<Member | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [ratings, setRatings] = useState<GroupRatingsResult | null>(null);
+  const [topRows, setTopRows] = useState<GroupTopTitle[]>([]);
   const [titleCache, setTitleCache] = useState<Record<string, TitleSnapshot>>({});
   const [shortlistFallback, setShortlistFallback] = useState<Record<string, ShortlistSnapshot>>({});
   const [loadError, setLoadError] = useState<
@@ -143,8 +148,17 @@ export default function GroupHubPage() {
     let alive = true;
     setIsLoadingGroup(true);
     setLoadError("none");
+    setAuthBlocked(false);
 
     (async () => {
+      const anonUserId = await ensureAnonymousSession();
+      if (!alive) return;
+      if (!anonUserId) {
+        setAuthBlocked(true);
+        setIsLoadingGroup(false);
+        return;
+      }
+
       const uid = await getCurrentUserId();
       const loaded = await getGroup(groupId, joinCode || undefined);
       if (!alive) return;
@@ -169,27 +183,57 @@ export default function GroupHubPage() {
     return () => {
       alive = false;
     };
-  }, [groupId, joinCode]);
+  }, [groupId, joinCode, authRetryKey]);
 
   useEffect(() => {
-    if (!group) return;
+    if (!group || authBlocked) return;
     let alive = true;
+    let intervalId: number | null = null;
 
     (async () => {
-      const [memberRes, ratingRes] = await Promise.all([
-        listGroupMembers(groupId),
-        getGroupRatings(groupId),
-      ]);
+      const fetch = async () => {
+        const [memberRes, ratingRes, topRes] = await Promise.all([
+          listGroupMembers(groupId),
+          getGroupRatings(groupId),
+          getGroupTopTitles(groupId),
+        ]);
 
-      if (!alive) return;
-      setMembers(memberRes.members);
-      setRatings(ratingRes);
+        if (!alive) return;
+        setMembers(memberRes.members);
+        setRatings(ratingRes);
+        setTopRows((current) => {
+          if (topRes.rows.length === 0 && current.length > 0) return current;
+          return topRes.rows;
+        });
+      };
+
+      await fetch();
+      intervalId = window.setInterval(() => {
+        void fetch();
+      }, 3000);
     })();
 
     return () => {
       alive = false;
+      if (intervalId) window.clearInterval(intervalId);
     };
-  }, [group, groupId]);
+  }, [group, groupId, authBlocked]);
+
+  if (authBlocked) {
+    return (
+      <AppShell>
+        <Card>
+          <CardTitle>Authentication required</CardTitle>
+          <div className="mt-2">
+            <Muted>We could not start an anonymous session. Please retry.</Muted>
+          </div>
+          <div className="mt-4">
+            <Button onClick={() => setAuthRetryKey((v) => v + 1)}>Retry</Button>
+          </div>
+        </Card>
+      </AppShell>
+    );
+  }
 
   const inviteLink = useMemo(() => {
     if (typeof window === "undefined") return "";
@@ -210,9 +254,8 @@ export default function GroupHubPage() {
   }, [ratings]);
 
   const topThree = useMemo(() => {
-    if (!ratings) return [];
-    return ratings.rows.slice(0, 3);
-  }, [ratings]);
+    return topRows.slice(0, 3);
+  }, [topRows]);
 
   useEffect(() => {
     let alive = true;
@@ -221,7 +264,7 @@ export default function GroupHubPage() {
       if (!alive) return;
       const map: Record<string, ShortlistSnapshot> = {};
       for (const item of shortlist) {
-        map[item.title_key] = item.title_snapshot;
+        map[item.title_id] = item.title_snapshot;
       }
       const slRows = topThree.map((row) => row.titleId).filter((id) => id.startsWith("sl:"));
       for (const titleId of slRows) {
@@ -238,14 +281,11 @@ export default function GroupHubPage() {
   useEffect(() => {
     let alive = true;
     const ids = topThree.map((row) => row.titleId);
-    if (ids.length === 0) {
-      setTitleCache({});
-      return;
-    }
+    if (ids.length === 0) return;
     (async () => {
       const snapshots = await getTitleSnapshots(ids);
       if (!alive) return;
-      setTitleCache(snapshots);
+      setTitleCache((current) => ({ ...current, ...snapshots }));
     })();
     return () => {
       alive = false;
@@ -305,7 +345,7 @@ export default function GroupHubPage() {
     return (
       <AppShell>
         <StateCard
-          title="Loading group hub"
+          title="Loading group home"
           badge="Please wait"
           description="Getting your group details ready."
         />
@@ -320,7 +360,7 @@ export default function GroupHubPage() {
           <StateCard
             title="Invite code required"
             badge="Ask host"
-            description="Use the full invite link from the host to open this group hub."
+            description="Use the full invite link from the host to open this group home."
             actionHref="/create"
             actionLabel="Create your own group"
             actionVariant="secondary"
@@ -372,10 +412,12 @@ export default function GroupHubPage() {
   return (
     <AppShell>
       <div className="space-y-6">
+        <GroupTabs groupId={groupId} />
+
         <Card>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight">{group.name} ChooseAMovie Hub</h1>
+              <h1 className="text-2xl font-semibold tracking-tight">{group.name} ChooseAMovie Home</h1>
               <div className="mt-1 text-sm text-white/60">
                 Share this invite so everyone can join your group and rate together.
               </div>
@@ -412,18 +454,12 @@ export default function GroupHubPage() {
                 >
                   Copy invite link
                 </Button>
-                <Button variant="secondary" onClick={() => router.push(`/g/${groupId}/rate`)}>
-                  Rate
-                </Button>
                 <Button variant="secondary" onClick={() => router.push(`/g/${groupId}/results`)}>
                   Results
                 </Button>
               </div>
             ) : (
               <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" onClick={() => router.push(`/g/${groupId}/rate`)}>
-                  Rate
-                </Button>
                 <Button variant="secondary" onClick={() => router.push(`/g/${groupId}/results`)}>
                   Results
                 </Button>
@@ -450,9 +486,18 @@ export default function GroupHubPage() {
           </div>
         </Card>
 
-        <StorageModeBanner />
+        {isHost || activeMember ? (
+          <div className="flex justify-center">
+            <Button
+              className="w-auto bg-[rgb(var(--card-2))] px-8 py-3 text-base text-white transition-all duration-200 hover:bg-[rgb(var(--yellow))] hover:text-black active:scale-[0.98]"
+              onClick={() => router.push(`/g/${groupId}/rate`)}
+            >
+              Start rating
+            </Button>
+          </div>
+        ) : null}
 
-        <div className="grid gap-4">
+        <div className="grid gap-4 xl:grid-cols-2">
           <Card>
             <CardTitle>Group setup summary</CardTitle>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -558,15 +603,7 @@ export default function GroupHubPage() {
                       return (
                         <>
                           <div className="flex min-w-0 items-start gap-2">
-                            <div className="h-14 w-10 shrink-0 overflow-hidden rounded border border-white/10 bg-white/5">
-                              {posterUrl ? (
-                                <img src={posterUrl} alt={resolved.title} className="h-full w-full object-cover" />
-                              ) : (
-                                <div className="flex h-full w-full items-center justify-center text-[10px] text-white/45">
-                                  No art
-                                </div>
-                              )}
-                            </div>
+                            <PosterImage src={posterUrl} alt={resolved.title} className="w-10 shrink-0" />
                             <div className="min-w-0">
                               <a
                                 href={resolved.infoUrl}
@@ -600,7 +637,7 @@ export default function GroupHubPage() {
             </div>
           </Card>
 
-          <div className="pt-1">
+          <div className="pt-1 xl:col-span-2">
             <a href="/create">
               <Button variant="secondary" className="w-full sm:w-auto">
                 Create new group

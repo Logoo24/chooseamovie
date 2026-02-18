@@ -125,7 +125,7 @@ export async function getGroup(groupId: string, joinCode?: string): Promise<GetG
     return { group: local, error: "none" };
   }
 
-  const userId = await getCurrentUserId();
+  const userId = (await ensureAnonymousSession()) ?? (await getCurrentUserId());
   if (!userId) return { group: null, error: "auth_failed" };
 
   try {
@@ -306,15 +306,19 @@ function cleanupLocalGroupState(groupId: string) {
 export async function deleteGroup(groupId: string): Promise<{
   error: "none" | "forbidden" | "network";
 }> {
-  cleanupLocalGroupState(groupId);
-
-  if (!supabase) return { error: "none" };
+  if (!supabase) {
+    cleanupLocalGroupState(groupId);
+    return { error: "none" };
+  }
 
   await ensureAnonymousSession();
 
   try {
-    const { error } = await supabase.from(GROUPS_TABLE).delete().eq("id", groupId);
-    if (!error) return { error: "none" };
+    const { error } = await supabase.rpc("delete_group", { p_group_id: groupId });
+    if (!error) {
+      cleanupLocalGroupState(groupId);
+      return { error: "none" };
+    }
 
     const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
     if (text.includes("permission denied") || text.includes("row-level security")) {
