@@ -89,6 +89,8 @@ create unique index if not exists ratings_group_member_title_uidx
 - Tailwind config warning appears in build logs due to module type settings.
 
 ## Recent commits log
+### 2026-02-17 - WIP: polish + ratings/results fixes (`e5e5803`)
+- Update summary pending.
 ### 2026-02-17 - WIP: Phase 2 polish, TMDB routes, endless mode, title cache (`48b68c0`)
 - Update summary pending.
 ### 2026-02-17 - Phase 1: Supabase scaffolding, host/join flow, rate/results routes (`0dae42f`)
