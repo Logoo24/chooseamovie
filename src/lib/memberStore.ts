@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 import { ensureAnonymousSession } from "@/lib/supabase";
 import {
   ensureMemberByName,
+  listMembers,
   upsertMember,
   type Member,
 } from "@/lib/ratings";
@@ -20,7 +21,10 @@ export async function joinGroupMember(
   groupId: string,
   name: string,
   joinCode: string
-): Promise<{ member: Member | null; error: "none" | "invalid_code" | "auth_failed" | "unknown" }> {
+): Promise<{
+  member: Member | null;
+  error: "none" | "invalid_code" | "auth_failed" | "network" | "unknown";
+}> {
   const trimmed = name.trim();
   if (!supabase) {
     return { member: ensureMemberByName(groupId, trimmed), error: "none" };
@@ -41,6 +45,14 @@ export async function joinGroupMember(
       if (text.includes("join_code") || text.includes("invalid")) {
         return { member: null, error: "invalid_code" };
       }
+      if (
+        text.includes("network") ||
+        text.includes("failed to fetch") ||
+        text.includes("fetch failed") ||
+        text.includes("timeout")
+      ) {
+        return { member: null, error: "network" };
+      }
       return { member: null, error: "unknown" };
     }
 
@@ -54,7 +66,16 @@ export async function joinGroupMember(
     });
     upsertMember(groupId, member);
     return { member, error: "none" };
-  } catch {
+  } catch (error) {
+    const text = `${error}`.toLowerCase();
+    if (
+      text.includes("network") ||
+      text.includes("failed to fetch") ||
+      text.includes("fetch failed") ||
+      text.includes("timeout")
+    ) {
+      return { member: null, error: "network" };
+    }
     return { member: null, error: "unknown" };
   }
 }
@@ -62,6 +83,8 @@ export async function joinGroupMember(
 export async function ensureMember(groupId: string, name: string): Promise<Member> {
   const trimmed = name.trim();
   if (!supabase) return ensureMemberByName(groupId, trimmed);
+  const uid = await ensureAnonymousSession();
+  if (!uid) return ensureMemberByName(groupId, trimmed);
 
   try {
     const { data: existing, error: existingError } = await supabase
@@ -98,5 +121,81 @@ export async function ensureMember(groupId: string, name: string): Promise<Membe
     return member;
   } catch {
     return ensureMemberByName(groupId, trimmed);
+  }
+}
+
+export async function listGroupMembers(groupId: string): Promise<{
+  members: Member[];
+  error: "none" | "network" | "forbidden";
+}> {
+  if (!supabase) {
+    return { members: listMembers(groupId), error: "none" };
+  }
+
+  await ensureAnonymousSession();
+
+  try {
+    const { data, error } = await supabase
+      .from(MEMBERS_TABLE)
+      .select("id, name, created_at")
+      .eq("group_id", groupId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+      const forbidden = text.includes("permission denied") || text.includes("row-level security");
+      return {
+        members: listMembers(groupId),
+        error: forbidden ? "forbidden" : "network",
+      };
+    }
+
+    const members = (data ?? []).map((row) =>
+      toMember({
+        id: row.id as string,
+        name: row.name as string,
+        created_at: (row.created_at as string | null) ?? null,
+      })
+    );
+    for (const member of members) {
+      upsertMember(groupId, member);
+    }
+    return { members, error: "none" };
+  } catch {
+    return { members: listMembers(groupId), error: "network" };
+  }
+}
+
+export async function removeGroupMember(groupId: string, memberId: string): Promise<{
+  error: "none" | "network" | "forbidden";
+}> {
+  if (!supabase) {
+    const local = listMembers(groupId).filter((member) => member.id !== memberId);
+    localStorage.setItem(`chooseamovie:members:${groupId}`, JSON.stringify(local));
+    localStorage.removeItem(`chooseamovie:ratings:${groupId}:${memberId}`);
+    return { error: "none" };
+  }
+
+  await ensureAnonymousSession();
+
+  try {
+    const { error } = await supabase
+      .from(MEMBERS_TABLE)
+      .delete()
+      .eq("group_id", groupId)
+      .eq("id", memberId);
+
+    if (error) {
+      const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+      const forbidden = text.includes("permission denied") || text.includes("row-level security");
+      return { error: forbidden ? "forbidden" : "network" };
+    }
+
+    const local = listMembers(groupId).filter((member) => member.id !== memberId);
+    localStorage.setItem(`chooseamovie:members:${groupId}`, JSON.stringify(local));
+    localStorage.removeItem(`chooseamovie:ratings:${groupId}:${memberId}`);
+    return { error: "none" };
+  } catch {
+    return { error: "network" };
   }
 }

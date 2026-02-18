@@ -7,3 +7,7 @@ export function markHostForGroup(groupId: string) {
 export function isHostForGroup(groupId: string) {
   return localStorage.getItem(KEY_GROUP_HOST(groupId)) === "1";
 }
+
+export function unmarkHostForGroup(groupId: string) {
+  localStorage.removeItem(KEY_GROUP_HOST(groupId));
+}

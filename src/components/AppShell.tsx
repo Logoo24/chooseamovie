@@ -20,12 +20,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           </Link>
 
-          <Link
-            href="/create"
-            className="rounded-full bg-[rgb(var(--red))] px-4 py-2 text-sm font-semibold text-white shadow-sm hover:brightness-110 active:brightness-95"
-          >
-            New group
-          </Link>
+          <div aria-hidden className="h-9 w-9" />
         </div>
       </header>
 
@@ -33,7 +28,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <footer className="mx-auto max-w-3xl px-4 pb-8 pt-2 text-xs text-white/45">
         <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-          Tip: Right now groups save to this browser only. Later we will add a shared database so invite links work across devices.
+          Tip: If you are offline, some group updates may stay on this device until you reconnect.
         </div>
       </footer>
     </div>

@@ -18,7 +18,19 @@ export type GroupRatingsResult = {
   perMember: Record<string, MemberRatings>;
   rows: AggregatedRow[];
   accessDenied?: boolean;
+  error?: "none" | "network";
 };
+
+function isNetworkLikeError(error: { message?: string; details?: string } | null | undefined) {
+  if (!error) return false;
+  const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return (
+    text.includes("network") ||
+    text.includes("failed to fetch") ||
+    text.includes("fetch failed") ||
+    text.includes("timeout")
+  );
+}
 
 export async function setRating(
   groupId: string,
@@ -79,11 +91,11 @@ function aggregateFromRecords(
     return a.titleId.localeCompare(b.titleId);
   });
 
-  return { members, perMember, rows };
+  return { members, perMember, rows, error: "none" };
 }
 
 export async function getGroupRatings(groupId: string): Promise<GroupRatingsResult> {
-  if (!supabase) return aggregateGroupRatings(groupId);
+  if (!supabase) return { ...aggregateGroupRatings(groupId), error: "none" };
 
   try {
     const [membersRes, ratingsRes] = await Promise.all([
@@ -100,10 +112,12 @@ export async function getGroupRatings(groupId: string): Promise<GroupRatingsResu
         });
 
       if (hasRlsError) {
-        return { members: [], perMember: {}, rows: [], accessDenied: true };
+        return { members: [], perMember: {}, rows: [], accessDenied: true, error: "none" };
       }
 
-      return aggregateGroupRatings(groupId);
+      const fallback = aggregateGroupRatings(groupId);
+      const network = isNetworkLikeError(membersRes.error) || isNetworkLikeError(ratingsRes.error);
+      return { ...fallback, error: network ? "network" : "none" };
     }
 
     const members: Member[] = (membersRes.data ?? []).map((m) => ({
@@ -123,8 +137,8 @@ export async function getGroupRatings(groupId: string): Promise<GroupRatingsResu
       perMember[r.member_id][r.title_id] = r.value as RatingValue;
     }
 
-    return { ...aggregateFromRecords(members, perMember), accessDenied: false };
+    return { ...aggregateFromRecords(members, perMember), accessDenied: false, error: "none" };
   } catch {
-    return aggregateGroupRatings(groupId);
+    return { ...aggregateGroupRatings(groupId), error: "network" };
   }
 }

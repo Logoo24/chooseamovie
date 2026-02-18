@@ -1,25 +1,22 @@
 # DEV Notes
 
 ## Project snapshot
-ChooseAMovie is a Next.js App Router + TypeScript + Tailwind app for small groups to decide what to watch; it now includes Supabase-backed group/member/rating flows with anonymous auth bootstrap, invite links with `join_code`, host-vs-joiner behavior, and local fallback for offline/unavailable cases.
+ChooseAMovie is a Next.js App Router + TypeScript + Tailwind app for small groups to decide what to watch, with Supabase-backed group/member/rating flows, TMDB-backed custom list building, and host/joiner role separation.
 
 ## Current status
-- Phase 1 group flow is implemented: create group, host lobby, join welcome, rate, results.
-- Supabase client wiring is in place with environment-based fallback to local storage.
-- Anonymous auth bootstrap exists and runs silently at app start.
-- Group security fields are wired in app logic: `join_code` and `owner_user_id`.
-- Join flow expects `join_group` RPC and stores active member locally after join.
-- Ratings writes use `ratingStore` with Supabase upsert + local fallback.
-- Results use Supabase-backed read path with polling refresh every 3 seconds.
-- Offline/schema-mismatch banners exist for create/group pages.
+- Group hub flow is active at `/g/[groupId]` with host actions (invite/rate/results/custom list edit) and joiner-safe access.
+- Create flow supports `Unlimited rating` and custom list mode labels:
+  - `Custom Movie List` (movies-only)
+  - `Custom Movie/Show List` (movies + shows)
+- Custom list builder at `/g/[groupId]/shortlist` is host-only and uses TMDB proxy search.
+- Custom list items are persisted in `group_shortlist` as they are added/removed and survive refresh/navigation.
+- `/groups` page lists hosted and joined groups using Supabase where possible, with local fallback.
 
 ## Next up
-1. [ ] Validate and finalize Supabase schema for production (`groups`, `members`, `ratings`, `join_group` RPC).
-2. [ ] Harden RLS so all access paths are enforced by auth + `join_code` (no local bypass for protected paths).
-3. [ ] Verify member correctness across devices (dedupe, case-insensitive identity, role handling).
-4. [ ] Verify ratings correctness across devices (no stale local override, conflict handling).
-5. [ ] Add targeted integration tests for host create, join with code, denied without code, shared results visibility.
-6. [ ] Add migration notes/scripts to keep schema + policies reproducible.
+1. [ ] Add drag-and-drop ordering in custom list builder and wire to `reorderShortlist`.
+2. [ ] Add dedicated TMDB trending proxy route for richer suggestions.
+3. [ ] Add integration tests for create -> custom list -> hub and host/joiner page guards.
+4. [ ] Add migration scripts for `group_shortlist` constraints and indexes.
 
 ## How to run locally
 ```bash
@@ -42,6 +39,7 @@ Do not commit real keys.
   - `groups` (`id`, `name`, `created_at`, `schema_version`, `join_code`, `owner_user_id`, `settings`)
   - `members` (`id`, `group_id`, `user_id`, `name`, `role`, `created_at`)
   - `ratings` (`group_id`, `member_id`, `title_id`, `value`)
+  - `group_shortlist` (`group_id`, `title_key`, `title_snapshot`, `position`)
 - RPC expected:
   - `join_group(p_group_id, p_name, p_join_code)` returns joined member row.
 - RLS status:
@@ -49,6 +47,14 @@ Do not commit real keys.
   - Results page has friendly handling when RLS denies viewer access before join.
 - `join_code` status:
   - Generated on group create (10-char hex), embedded in invite links as `/g/<groupId>?code=<join_code>`.
+
+## Key routes
+- `/create` group setup
+- `/g/[groupId]` group hub
+- `/g/[groupId]/shortlist` host custom list builder
+- `/g/[groupId]/rate` rating flow
+- `/g/[groupId]/results` results
+- `/groups` my groups listing
 
 ## Known issues / bugs
 - Cross-device security depends on correct DB policies and `join_group` RPC; misconfiguration can cause join/read failures.

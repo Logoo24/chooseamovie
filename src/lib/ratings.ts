@@ -157,3 +157,21 @@ export function aggregateGroupRatings(groupId: string): {
 
   return { members, perMember, rows };
 }
+
+export function clearLocalGroupRatingsData(groupId: string) {
+  localStorage.removeItem(KEY_MEMBERS(groupId));
+  localStorage.removeItem(KEY_MEMBER_ACTIVE(groupId));
+
+  const prefix = `chooseamovie:ratings:${groupId}:`;
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(prefix)) {
+      keysToRemove.push(key);
+    }
+  }
+
+  for (const key of keysToRemove) {
+    localStorage.removeItem(key);
+  }
+}
