@@ -1,10 +1,8 @@
 import { aggregateGroupRatings, type AggregatedRow } from "@/lib/ratings";
-import { ensureAnonymousSession, supabase } from "@/lib/supabase";
+import { getTopTitles, type DbError } from "@/lib/api";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
-const GROUP_TOP_TITLES_TABLE = "group_top_titles";
 const LOCAL_TOP_TITLES_KEY = (groupId: string) => `chooseamovie:group_top_titles:${groupId}`;
-const RECOMPUTE_ATTEMPT_KEY = (groupId: string) => `chooseamovie:group_top_titles:recompute:${groupId}`;
-const RECOMPUTE_GUARD_MS = 30000;
 
 export type GroupTopTitle = {
   titleId: string;
@@ -13,33 +11,14 @@ export type GroupTopTitle = {
   rank: number | null;
 };
 
-function shouldAttemptRecompute(groupId: string) {
-  if (typeof window === "undefined") return true;
-  const raw = localStorage.getItem(RECOMPUTE_ATTEMPT_KEY(groupId));
-  if (!raw) return true;
-  const last = Number(raw);
-  if (!Number.isFinite(last)) return true;
-  return Date.now() - last > RECOMPUTE_GUARD_MS;
-}
-
-function markRecomputeAttempt(groupId: string) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(RECOMPUTE_ATTEMPT_KEY(groupId), String(Date.now()));
-}
-
-function toNumber(value: unknown, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function toOptionalNumber(value: unknown): number | null {
-  if (value === undefined || value === null) return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+function isForbiddenError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return text.includes("permission denied") || text.includes("row-level security");
 }
 
 function fromAggregate(rows: AggregatedRow[]): GroupTopTitle[] {
-  return rows.slice(0, 10).map((row, index) => ({
+  return rows.map((row, index) => ({
     titleId: row.titleId,
     avg: row.avg,
     votes: row.votes,
@@ -65,30 +44,35 @@ function saveLocalTopTitles(groupId: string, rows: GroupTopTitle[]) {
   localStorage.setItem(LOCAL_TOP_TITLES_KEY(groupId), JSON.stringify(rows));
 }
 
-function normalizeRows(data: Array<Record<string, unknown>>): GroupTopTitle[] {
-  const rows = data
-    .map((row) => {
-      const titleId = String(row.title_id ?? "").trim();
-      if (!titleId) return null;
-      const avg = toNumber(row.avg ?? row.avg_rating ?? row.average);
-      const votes = toNumber(
-        row.votes ?? row.rating_count ?? row.count ?? row.ratings_count ?? row.num_ratings
-      );
-      const rank = toOptionalNumber(row.rank ?? row.position);
-      return { titleId, avg, votes, rank };
-    })
-    .filter((row): row is GroupTopTitle => row !== null);
+function normalizeRows(
+  data: Array<{
+    title_id: string;
+    avg_rating: number | string;
+    rating_count: number;
+  }>
+): GroupTopTitle[] {
+  const rows: GroupTopTitle[] = [];
+  for (const [index, row] of data.entries()) {
+    const titleId = String(row.title_id ?? "").trim();
+    if (!titleId) continue;
+    const avg = Number(row.avg_rating ?? 0);
+    const votes = Number(row.rating_count ?? 0);
+    rows.push({
+      titleId,
+      avg: Number.isFinite(avg) ? avg : 0,
+      votes: Number.isFinite(votes) ? votes : 0,
+      rank: index + 1,
+    });
+  }
 
   rows.sort((a, b) => {
-    const ar = a.rank ?? Number.MAX_SAFE_INTEGER;
-    const br = b.rank ?? Number.MAX_SAFE_INTEGER;
-    if (ar !== br) return ar - br;
+    if (a.rank !== null && b.rank !== null && a.rank !== b.rank) return a.rank - b.rank;
     if (b.avg !== a.avg) return b.avg - a.avg;
     if (b.votes !== a.votes) return b.votes - a.votes;
     return a.titleId.localeCompare(b.titleId);
   });
 
-  return rows.slice(0, 10);
+  return rows;
 }
 
 export async function getGroupTopTitles(groupId: string): Promise<{
@@ -96,61 +80,28 @@ export async function getGroupTopTitles(groupId: string): Promise<{
   error: "none" | "network";
   accessDenied?: boolean;
 }> {
-  if (!supabase) {
+  if (!isSupabaseConfigured()) {
     return { rows: fromAggregate(aggregateGroupRatings(groupId).rows), error: "none", accessDenied: false };
   }
-  const client = supabase;
 
-  await ensureAnonymousSession();
-  try {
-    const fetchRows = async () =>
-      client
-        .from(GROUP_TOP_TITLES_TABLE)
-        .select("*")
-        .eq("group_id", groupId)
-        .order("avg_rating", { ascending: false })
-        .order("rating_count", { ascending: false })
-        .order("updated_at", { ascending: false })
-        .limit(10);
-
-    let { data, error } = await fetchRows();
-
-    if (error) {
-      const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
-      const accessDenied = text.includes("permission denied") || text.includes("row-level security");
-      if (accessDenied) {
-        return { rows: [], error: "none", accessDenied: true };
-      }
-      const local = loadLocalTopTitles(groupId);
-      return { rows: local, error: "network", accessDenied: false };
+  let fetched = await getTopTitles(groupId);
+  if (fetched.error) {
+    const accessDenied = isForbiddenError(fetched.error);
+    if (accessDenied) {
+      return { rows: [], error: "none", accessDenied: true };
     }
-
-    let rows = normalizeRows((data ?? []) as Array<Record<string, unknown>>);
-
-    if (rows.length === 0 && shouldAttemptRecompute(groupId)) {
-      markRecomputeAttempt(groupId);
-      const recompute = await client.rpc("recompute_group_top_titles", { p_group_id: groupId });
-      if (!recompute.error) {
-        const retried = await fetchRows();
-        data = retried.data;
-        error = retried.error;
-        if (error) {
-          const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
-          const accessDenied = text.includes("permission denied") || text.includes("row-level security");
-          if (accessDenied) {
-            return { rows: [], error: "none", accessDenied: true };
-          }
-          const local = loadLocalTopTitles(groupId);
-          return { rows: local, error: "network", accessDenied: false };
-        }
-        rows = normalizeRows((data ?? []) as Array<Record<string, unknown>>);
-      }
-    }
-
-    saveLocalTopTitles(groupId, rows);
-    return { rows, error: "none", accessDenied: false };
-  } catch {
     const local = loadLocalTopTitles(groupId);
     return { rows: local, error: "network", accessDenied: false };
   }
+
+  let rows = normalizeRows(
+    (fetched.data ?? []).map((row) => ({
+      title_id: row.title_id,
+      avg_rating: row.avg_rating,
+      rating_count: row.rating_count,
+    }))
+  );
+
+  saveLocalTopTitles(groupId, rows);
+  return { rows, error: "none", accessDenied: false };
 }

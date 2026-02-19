@@ -1,4 +1,9 @@
-import { supabase } from "@/lib/supabase";
+import {
+  listMembers as listMembersDb,
+  listRatings,
+  upsertRating,
+  type DbError,
+} from "@/lib/api";
 import {
   aggregateGroupRatings,
   loadRatings,
@@ -7,11 +12,9 @@ import {
   type Member,
   type MemberRatings,
   type RatingValue,
+  upsertMember,
 } from "@/lib/ratings";
-import { upsertMember } from "@/lib/ratings";
-
-const RATINGS_TABLE = "ratings";
-const MEMBERS_TABLE = "members";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
 export type GroupRatingsResult = {
   members: Member[];
@@ -21,7 +24,7 @@ export type GroupRatingsResult = {
   error?: "none" | "network";
 };
 
-function isNetworkLikeError(error: { message?: string; details?: string } | null | undefined) {
+function isNetworkLikeError(error: DbError | null | undefined) {
   if (!error) return false;
   const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
   return (
@@ -32,32 +35,24 @@ function isNetworkLikeError(error: { message?: string; details?: string } | null
   );
 }
 
+function isForbiddenError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return text.includes("permission denied") || text.includes("row-level security");
+}
+
 export async function setRating(
   groupId: string,
   memberId: string,
   titleId: string,
   rating: RatingValue
 ): Promise<void> {
-  // Keep local state responsive even when Supabase is slow/unavailable.
   const local = loadRatings(groupId, memberId);
   local[titleId] = rating;
   saveRatings(groupId, memberId, local);
 
-  if (!supabase) return;
-
-  try {
-    await supabase.from(RATINGS_TABLE).upsert(
-      {
-        group_id: groupId,
-        member_id: memberId,
-        title_id: titleId,
-        rating,
-      },
-      { onConflict: "group_id,member_id,title_id" }
-    );
-  } catch {
-    // local fallback is already written
-  }
+  if (!isSupabaseConfigured()) return;
+  await upsertRating(groupId, memberId, titleId, rating);
 }
 
 function aggregateFromRecords(
@@ -95,50 +90,40 @@ function aggregateFromRecords(
 }
 
 export async function getGroupRatings(groupId: string): Promise<GroupRatingsResult> {
-  if (!supabase) return { ...aggregateGroupRatings(groupId), error: "none" };
+  if (!isSupabaseConfigured()) return { ...aggregateGroupRatings(groupId), error: "none" };
 
-  try {
-    const [membersRes, ratingsRes] = await Promise.all([
-      supabase.from(MEMBERS_TABLE).select("id, name, created_at").eq("group_id", groupId),
-      supabase.from(RATINGS_TABLE).select("member_id, title_id, rating").eq("group_id", groupId),
-    ]);
+  const [membersRes, ratingsRes] = await Promise.all([
+    listMembersDb(groupId),
+    listRatings(groupId),
+  ]);
 
-    if (membersRes.error || ratingsRes.error) {
-      const hasRlsError = [membersRes.error, ratingsRes.error]
-        .filter(Boolean)
-        .some((e) => {
-          const text = `${e?.message ?? ""} ${e?.details ?? ""}`.toLowerCase();
-          return text.includes("permission denied") || text.includes("row-level security");
-        });
-
-      if (hasRlsError) {
-        return { members: [], perMember: {}, rows: [], accessDenied: true, error: "none" };
-      }
-
-      const fallback = aggregateGroupRatings(groupId);
-      const network = isNetworkLikeError(membersRes.error) || isNetworkLikeError(ratingsRes.error);
-      return { ...fallback, error: network ? "network" : "none" };
+  if (membersRes.error || ratingsRes.error) {
+    const hasRlsError = [membersRes.error, ratingsRes.error].some((error) => isForbiddenError(error));
+    if (hasRlsError) {
+      return { members: [], perMember: {}, rows: [], accessDenied: true, error: "none" };
     }
 
-    const members: Member[] = (membersRes.data ?? []).map((m) => ({
-      id: m.id,
-      name: m.name,
-      createdAt: m.created_at ?? new Date().toISOString(),
-    }));
-
-    const perMember: Record<string, MemberRatings> = {};
-    for (const m of members) {
-      perMember[m.id] = {};
-      upsertMember(groupId, m);
-    }
-
-    for (const r of ratingsRes.data ?? []) {
-      if (!perMember[r.member_id]) perMember[r.member_id] = {};
-      perMember[r.member_id][r.title_id] = r.rating as RatingValue;
-    }
-
-    return { ...aggregateFromRecords(members, perMember), accessDenied: false, error: "none" };
-  } catch {
-    return { ...aggregateGroupRatings(groupId), error: "network" };
+    const fallback = aggregateGroupRatings(groupId);
+    const network = isNetworkLikeError(membersRes.error) || isNetworkLikeError(ratingsRes.error);
+    return { ...fallback, error: network ? "network" : "none" };
   }
+
+  const members: Member[] = (membersRes.data ?? []).map((m) => ({
+    id: m.id,
+    name: m.name,
+    createdAt: m.created_at ?? new Date().toISOString(),
+  }));
+
+  const perMember: Record<string, MemberRatings> = {};
+  for (const m of members) {
+    perMember[m.id] = {};
+    upsertMember(groupId, m);
+  }
+
+  for (const r of ratingsRes.data ?? []) {
+    if (!perMember[r.member_id]) perMember[r.member_id] = {};
+    perMember[r.member_id][r.title_id] = Number(r.rating) as RatingValue;
+  }
+
+  return { ...aggregateFromRecords(members, perMember), accessDenied: false, error: "none" };
 }

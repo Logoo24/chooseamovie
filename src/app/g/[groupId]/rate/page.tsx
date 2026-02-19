@@ -19,7 +19,7 @@ import { getHostDisplayName } from "@/lib/hostProfileStore";
 import { isHostForGroup } from "@/lib/hostStore";
 import { ensureMember } from "@/lib/memberStore";
 import { setRating as setRatingValue } from "@/lib/ratingStore";
-import { ensureAnonymousSession } from "@/lib/supabase";
+import { ensureAuth } from "@/lib/api";
 import { upsertTitleSnapshot } from "@/lib/titleCacheStore";
 import { loadGroup, type Group } from "@/lib/storage";
 import {
@@ -36,6 +36,7 @@ type RateTitle = {
   type: "movie" | "tv";
   tmdbType?: "movie" | "tv";
   tmdbId?: number;
+  tmdbPayloadKeys?: string[];
   year?: string;
   genre?: string;
   posterPath?: string | null;
@@ -61,6 +62,11 @@ type ProvidersResponse = {
 
 type DetailsResponse = {
   release_date?: string | null;
+  mpaa_rating?: string | null;
+  genres?: Array<{
+    id: number;
+    name: string;
+  }>;
 };
 
 function makeCustomListTitles(items: string[], genreLabel: string): RateTitle[] {
@@ -79,6 +85,7 @@ function mapQueueToRateTitle(item: EndlessQueueItem): RateTitle {
     type: item.type,
     tmdbType: item.type,
     tmdbId: item.id,
+    tmdbPayloadKeys: item.tmdb_payload_keys ?? [],
     year: item.year ?? undefined,
     genre: item.type === "movie" ? "Trending Movie" : "Trending Show",
     posterPath: item.poster_path,
@@ -118,15 +125,18 @@ export default function RatePage() {
   const [currentStars, setCurrentStars] = useState(0);
   const [unratedTitles, setUnratedTitles] = useState<RateTitle[]>([]);
   const [isRefreshingQueue, setIsRefreshingQueue] = useState(false);
+  const [isCheckingMoreTitles, setIsCheckingMoreTitles] = useState(false);
+  const [didExhaustionProbe, setDidExhaustionProbe] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
 
-  const [showDetails, setShowDetails] = useState(false);
   const [isLoadingProviders, setIsLoadingProviders] = useState(false);
   const [providerItems, setProviderItems] = useState<
     Array<{ provider_id: number; provider_name: string; logo_path: string | null }>
   >([]);
   const [providersLink, setProvidersLink] = useState("");
   const [isInTheaters, setIsInTheaters] = useState(false);
+  const [mpaaRating, setMpaaRating] = useState<string | null>(null);
+  const [titleGenres, setTitleGenres] = useState<string[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -134,7 +144,7 @@ export default function RatePage() {
     setAuthBlocked(false);
 
     (async () => {
-      const anonUserId = await ensureAnonymousSession();
+      const anonUserId = await ensureAuth();
       if (!alive) return;
       if (!anonUserId) {
         setAuthBlocked(true);
@@ -219,6 +229,52 @@ export default function RatePage() {
   const remainingCount = Math.max(0, unratedTitles.length - currentIndex);
 
   useEffect(() => {
+    setIsCheckingMoreTitles(false);
+    setDidExhaustionProbe(false);
+  }, [groupId, member?.id, group?.settings.ratingMode]);
+
+  useEffect(() => {
+    if (currentTitle) {
+      setDidExhaustionProbe(false);
+    }
+  }, [currentTitle?.id]);
+
+  useEffect(() => {
+    let alive = true;
+    if (!group || !member || isCustomListMode) return;
+    if (currentTitle) return;
+    if (isRefreshingQueue || isCheckingMoreTitles || didExhaustionProbe) return;
+
+    (async () => {
+      setIsCheckingMoreTitles(true);
+      try {
+        const queue = await ensureEndlessQueue(groupId, member.id, group.settings);
+        if (!alive) return;
+        setUnratedTitles(queue.map(mapQueueToRateTitle));
+        setCurrentIndex(0);
+        setCurrentStars(0);
+      } finally {
+        if (!alive) return;
+        setDidExhaustionProbe(true);
+        setIsCheckingMoreTitles(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [
+    currentTitle?.id,
+    didExhaustionProbe,
+    group,
+    groupId,
+    isCheckingMoreTitles,
+    isCustomListMode,
+    isRefreshingQueue,
+    member,
+  ]);
+
+  useEffect(() => {
     if (!currentTitle || !group || group.settings.ratingMode === "shortlist") return;
     void upsertTitleSnapshot(currentTitle.id, {
       title_id: currentTitle.id,
@@ -227,19 +283,24 @@ export default function RatePage() {
       poster_path: currentTitle.posterPath ?? null,
       media_type: currentTitle.type,
       overview: currentTitle.description ?? null,
+    }, {
+      callSite: "RatePage.currentTitle",
+      upstreamPayloadKeys: currentTitle.tmdbPayloadKeys ?? [],
+      tmdbSucceeded: true,
     });
   }, [currentTitle, group]);
 
   useEffect(() => {
     let alive = true;
-    setShowDetails(false);
     setProviderItems([]);
     setProvidersLink("");
     setIsInTheaters(false);
+    setMpaaRating(null);
+    setTitleGenres([]);
 
     if (!currentTitle) return;
-    const googleQuery = `${currentTitle.name} ${currentTitle.type === "movie" ? "movie" : "show"}`;
-    setProvidersLink(`https://www.google.com/search?q=${encodeURIComponent(googleQuery)}`);
+    const watchQuery = `watch ${currentTitle.name} ${currentTitle.type === "movie" ? "movie" : "show"}`;
+    setProvidersLink(`https://www.google.com/search?q=${encodeURIComponent(watchQuery)}`);
 
     if (!currentTitle.tmdbType || !currentTitle.tmdbId) return;
 
@@ -261,14 +322,22 @@ export default function RatePage() {
           }));
 
         setProviderItems(providers);
-        setProvidersLink(providersBody.tmdb_link ?? `https://www.themoviedb.org/${currentTitle.tmdbType}/${currentTitle.tmdbId}`);
+
+        const detailsRes = await fetch(
+          `/api/tmdb/details?type=${currentTitle.tmdbType}&id=${currentTitle.tmdbId}`
+        );
+        const detailsBody = (await detailsRes.json()) as DetailsResponse;
+        if (!alive || !detailsRes.ok) return;
+
+        const genres = Array.isArray(detailsBody.genres)
+          ? detailsBody.genres
+              .map((genre) => genre.name?.trim() ?? "")
+              .filter((name): name is string => name.length > 0)
+          : [];
+        setTitleGenres(genres);
 
         if (currentTitle.tmdbType === "movie") {
-          const detailsRes = await fetch(
-            `/api/tmdb/details?type=movie&id=${currentTitle.tmdbId}`
-          );
-          const detailsBody = (await detailsRes.json()) as DetailsResponse;
-          if (!alive || !detailsRes.ok) return;
+          setMpaaRating(detailsBody.mpaa_rating?.trim() || null);
           if (isLikelyInTheaters(detailsBody.release_date ?? null)) {
             setIsInTheaters(true);
           }
@@ -417,6 +486,22 @@ export default function RatePage() {
   }
 
   if (!currentTitle) {
+    if (!isCustomListMode && isCheckingMoreTitles) {
+      return (
+        <AppShell>
+          <div className="space-y-6">
+            <GroupTabs groupId={groupId} />
+            <Card>
+              <CardTitle>Finding more titles</CardTitle>
+              <div className="mt-2">
+                <Muted>Checking more pages that match your group filters.</Muted>
+              </div>
+            </Card>
+          </div>
+        </AppShell>
+      );
+    }
+
     return (
       <AppShell>
         <div className="space-y-6">
@@ -491,16 +576,16 @@ export default function RatePage() {
                       void applyRating(value as RatingValue);
                     }
                   }}
-                  showLabels
-                  showNumericHint
+                  showLabels={false}
+                  showNumericHint={false}
                 />
 
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <Button variant="secondary" onClick={() => void applyRating(0)}>
-                    Skip
-                  </Button>
                   <Button variant="ghost" onClick={() => void onUndo()} disabled={history.length === 0}>
                     Undo
+                  </Button>
+                  <Button variant="secondary" onClick={() => void applyRating(0)}>
+                    Skip
                   </Button>
                 </div>
               </div>
@@ -551,17 +636,19 @@ export default function RatePage() {
                     Search online
                   </a>
                 ) : null}
+              </div>
+            </Card>
 
-                <Button variant="ghost" onClick={() => setShowDetails((v) => !v)}>
-                  {showDetails ? "Hide details" : "Details"}
-                </Button>
-
-                {showDetails ? (
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/75">
-                    <div>{currentTitle.year ?? "Unknown year"} | {currentTitle.type === "movie" ? "Movie" : "Show"}</div>
-                    <div className="mt-1">{currentTitle.genre ?? "General"}</div>
-                  </div>
+            <Card>
+              <CardTitle>Title metadata</CardTitle>
+              <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/75">
+                <div>{currentTitle.year ?? "Unknown year"} | {currentTitle.type === "movie" ? "Movie" : "Show"}</div>
+                <div className="mt-1">{titleGenres.length > 0 ? titleGenres.join(", ") : currentTitle.genre ?? "General"}</div>
+                {currentTitle.type === "movie" ? (
+                  <div className="mt-1">MPAA: {mpaaRating ?? "Not rated"}</div>
                 ) : null}
+                {currentTitle.tmdbId ? <div className="mt-1">TMDB ID: {currentTitle.tmdbId}</div> : null}
+                {isInTheaters ? <div className="mt-1 text-[rgb(var(--yellow))]">Currently in theaters</div> : null}
               </div>
             </Card>
           </div>

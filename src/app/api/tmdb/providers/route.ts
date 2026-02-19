@@ -1,5 +1,12 @@
 import { NextRequest } from "next/server";
-import { okJson, parseEnum, parsePositiveInt, tmdbFetch } from "@/app/api/tmdb/_shared";
+import {
+  errorJson,
+  MissingTmdbTokenError,
+  okJson,
+  parseEnum,
+  parsePositiveInt,
+  tmdbFetch,
+} from "@/app/api/tmdb/_shared";
 
 type TitleType = "movie" | "tv";
 
@@ -37,7 +44,17 @@ export async function GET(request: NextRequest) {
   const id = parsePositiveInt(searchParams.get("id"), "id", { min: 1, max: 999999999 });
   if (!id.ok) return id.response;
 
-  const upstream = await tmdbFetch<TmdbProvidersResponse>(`/${type.value}/${id.value}/watch/providers`);
+  let upstream: Awaited<ReturnType<typeof tmdbFetch<TmdbProvidersResponse>>>;
+  try {
+    upstream = await tmdbFetch<TmdbProvidersResponse>(`/${type.value}/${id.value}/watch/providers`, {
+      callSite: "providers.GET",
+    });
+  } catch (error) {
+    if (error instanceof MissingTmdbTokenError) {
+      return errorJson(500, "config_error", error.message);
+    }
+    throw error;
+  }
   if (!upstream.ok) return upstream.response;
 
   const us = upstream.data.results?.US;

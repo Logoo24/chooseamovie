@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { checkSupabaseReachable, isSupabaseConfigured } from "@/lib/supabase";
+import { checkSupabaseReachable } from "@/lib/api";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
 export type StorageMode = "checking" | "online" | "offline";
 

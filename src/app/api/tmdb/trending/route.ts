@@ -1,5 +1,11 @@
 import { NextRequest } from "next/server";
-import { okJson, parseEnum, tmdbFetch } from "@/app/api/tmdb/_shared";
+import {
+  errorJson,
+  MissingTmdbTokenError,
+  okJson,
+  parseEnum,
+  tmdbFetch,
+} from "@/app/api/tmdb/_shared";
 import { buildTmdbTitleKey } from "@/lib/tmdbTitleKey";
 
 type TrendingType = "all" | "movie" | "tv";
@@ -15,6 +21,7 @@ type TmdbTrendingItem = {
   first_air_date?: string | null;
   poster_path?: string | null;
   overview?: string | null;
+  vote_count?: number | null;
 };
 
 type TmdbTrendingResponse = {
@@ -36,9 +43,17 @@ export async function GET(request: NextRequest) {
   const window = parseEnum(searchParams.get("window"), ["day", "week"] as const, "window", "week");
   if (!window.ok) return window.response;
 
-  const upstream = await tmdbFetch<TmdbTrendingResponse>(
-    `/trending/${type.value}/${window.value}`
-  );
+  let upstream: Awaited<ReturnType<typeof tmdbFetch<TmdbTrendingResponse>>>;
+  try {
+    upstream = await tmdbFetch<TmdbTrendingResponse>(`/trending/${type.value}/${window.value}`, {
+      callSite: "trending.GET",
+    });
+  } catch (error) {
+    if (error instanceof MissingTmdbTokenError) {
+      return errorJson(500, "config_error", error.message);
+    }
+    throw error;
+  }
   if (!upstream.ok) return upstream.response;
 
   const results = (upstream.data.results ?? [])
@@ -57,6 +72,8 @@ export async function GET(request: NextRequest) {
         title_key: buildTmdbTitleKey(itemType, item.id),
         title: rawTitle ?? "",
         year: extractYear(rawDate),
+        release_date: rawDate ?? null,
+        vote_count: typeof item.vote_count === "number" ? item.vote_count : null,
         poster_path: item.poster_path ?? null,
         overview: item.overview ?? "",
       };

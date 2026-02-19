@@ -9,14 +9,14 @@ ChooseAMovie is a Next.js App Router + TypeScript + Tailwind app for small group
   - `Custom Movie List` (movies-only)
   - `Custom Movie/Show List` (movies + shows)
 - Custom list builder at `/g/[groupId]/shortlist` is host-only and uses TMDB proxy search.
-- Custom list items are persisted in `group_shortlist` as they are added/removed and survive refresh/navigation.
+- Custom list items are persisted in `group_custom_list` as they are added/removed and survive refresh/navigation.
 - `/groups` page lists hosted and joined groups using Supabase where possible, with local fallback.
 
 ## Next up
 1. [ ] Add drag-and-drop ordering in custom list builder and wire to `reorderShortlist`.
 2. [ ] Add dedicated TMDB trending proxy route for richer suggestions.
 3. [ ] Add integration tests for create -> custom list -> hub and host/joiner page guards.
-4. [ ] Add migration scripts for `group_shortlist` constraints and indexes.
+4. [ ] Add migration scripts for `group_custom_list` constraints and indexes.
 
 ## How to run locally
 ```bash
@@ -39,18 +39,24 @@ Do not commit real keys.
   - `groups` (`id`, `name`, `created_at`, `schema_version`, `join_code`, `owner_user_id`, `settings`)
   - `members` (`id`, `group_id`, `user_id`, `name`, `role`, `created_at`)
   - `ratings` (`group_id`, `member_id`, `title_id`, `rating`, `updated_at`)
-  - `group_shortlist` (`group_id`, `title_id`, `title_snapshot`, `position`, `created_at`)
+  - `group_custom_list` (`group_id`, `title_id`, `title_snapshot`, `position`, `created_at`)
   - `group_top_titles` (`group_id`, `title_id`, `avg_rating`, `rating_count`, `updated_at`)
   - `title_cache` (`title_id`, `snapshot`, `updated_at`)
 - RPC expected:
+  - `create_group(p_name text, p_settings jsonb, p_schema_version integer) -> uuid` (single UUID string group id)
   - `join_group(p_group_id, p_name, p_join_code)` returns joined member row.
   - `delete_group(p_group_id)`
   - `recompute_group_top_titles(p_group_id)`
+- Function grants:
+  - `grant execute on function public.create_group(p_name text, p_settings jsonb, p_schema_version integer) to "PUBLIC", anon, authenticated, postgres, service_role;`
 - RLS status:
   - App assumes RLS is enabled and policies allow owner-host create + join via RPC + member-scoped ratings.
   - Results page has friendly handling when RLS denies viewer access before join.
 - `join_code` status:
-  - Generated on group create (10-char hex), embedded in invite links as `/g/<groupId>?code=<join_code>`.
+  - Invite links use `/g/<groupId>`.
+  - `join_group` receives `p_join_code = groupId` (string form of the UUID in the URL).
+- Top picks setting:
+  - `groups.settings.top_titles_limit` controls how many rows `recompute_group_top_titles` stores (default `100`).
 
 ## Key routes
 - `/create` group setup
@@ -63,7 +69,7 @@ Do not commit real keys.
 ## Developer diagnostics
 ### Common network errors and what they usually mean
 - `401/403` on `members`/`ratings`/`group_top_titles`: RLS denied access (viewer has not joined, or policy mismatch).
-- `400` with unknown column (`value`, `title_key`, `title_snapshot` on `title_cache`): schema mismatch between app and database.
+- `400` with unknown column (`value` on `ratings`, wrong cache column on `title_cache`): app/database contract mismatch. App must use `ratings.rating`, `group_custom_list`, and `title_cache.snapshot`.
 - RPC error on `recompute_group_top_titles` or `join_group`: missing RPC in database or wrong argument names.
 - `Failed to fetch` / timeout: connection issue to Supabase project or invalid URL/key in `.env.local`.
 
@@ -75,12 +81,14 @@ create unique index if not exists ratings_group_member_title_uidx
   on public.ratings (group_id, member_id, title_id);
 ```
 
-### Quick write verification
-1. Open `/g/<groupId>/rate` as a joined member.
-2. Click a star on a title.
-3. Confirm one row exists/updates in `ratings` for that exact `(group_id, member_id, title_id)` with `rating`.
-4. Open `/g/<groupId>/results` and verify the title appears in top picks (from `group_top_titles`).
-5. Refresh Results and verify title/poster stays stable (no fallback flash to empty/no-art state).
+### Smoke test checklist
+1. Create group: open `/create`, finish wizard, and verify group home loads with shareable invite link `/g/<groupId>`.
+2. Join from link: open invite link on a second session/device, join with a name, and confirm join succeeds.
+3. Rate a title: on `/g/<groupId>/rate`, submit a rating and confirm one `ratings` row exists for `(group_id, member_id, title_id)` using `rating`.
+4. Results ranking list: open `/g/<groupId>/results`, verify rows come from `group_top_titles` ordering, and verify Top `10/20/50/100` toggles are display-only slices.
+5. Refresh persistence: refresh home/rate/results pages and confirm group, members, ratings, and custom list still load.
+6. Second device sync: join from another device/session, submit ratings, and verify results/members update.
+7. Members list updates: host removes a member on `/g/<groupId>` and verify list updates and removed member no longer appears.
 
 ## Known issues / bugs
 - Cross-device security depends on correct DB policies and `join_group` RPC; misconfiguration can cause join/read failures.

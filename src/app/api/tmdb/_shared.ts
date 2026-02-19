@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
+const TMDB_TOKEN_ENV_VAR = "TMDB_READ_TOKEN";
+const missingTokenLoggedByCallSite = new Set<string>();
 
 type ApiErrorCode =
   | "bad_request"
@@ -16,6 +18,24 @@ type ApiErrorBody = {
     details?: string;
   };
 };
+
+type TmdbFetchOptions = {
+  query?: Record<string, string | number | undefined>;
+  callSite?: string;
+};
+
+export class MissingTmdbTokenError extends Error {
+  readonly envVarName = TMDB_TOKEN_ENV_VAR;
+  readonly callSite: string;
+
+  constructor(callSite: string) {
+    super(
+      `TMDB proxy is not configured. Missing ${TMDB_TOKEN_ENV_VAR}. (call site: ${callSite})`
+    );
+    this.name = "MissingTmdbTokenError";
+    this.callSite = callSite;
+  }
+}
 
 function jsonHeaders(cacheControl: string) {
   return {
@@ -150,22 +170,23 @@ export function validateLanguage(
 
 export async function tmdbFetch<T>(
   path: string,
-  query?: Record<string, string | number | undefined>
+  options?: TmdbFetchOptions
 ): Promise<{ ok: true; data: T } | { ok: false; response: NextResponse }> {
+  const callSite = options?.callSite ?? "unknown";
   const token = process.env.TMDB_READ_TOKEN?.trim();
   if (!token) {
-    return {
-      ok: false,
-      response: errorJson(
-        500,
-        "config_error",
-        "TMDB proxy is not configured. Missing TMDB_READ_TOKEN."
-      ),
-    };
+    if (process.env.NODE_ENV === "development" && !missingTokenLoggedByCallSite.has(callSite)) {
+      missingTokenLoggedByCallSite.add(callSite);
+      console.error("[tmdb] missing env var", {
+        envVar: TMDB_TOKEN_ENV_VAR,
+        callSite,
+      });
+    }
+    throw new MissingTmdbTokenError(callSite);
   }
 
   const url = new URL(`${TMDB_BASE_URL}${path}`);
-  for (const [key, value] of Object.entries(query ?? {})) {
+  for (const [key, value] of Object.entries(options?.query ?? {})) {
     if (value !== undefined) {
       url.searchParams.set(key, String(value));
     }

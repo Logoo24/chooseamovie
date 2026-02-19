@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
 import {
+  errorJson,
+  MissingTmdbTokenError,
   okJson,
   parseEnum,
   parsePositiveInt,
@@ -51,12 +53,23 @@ export async function GET(request: NextRequest) {
   if (!language.ok) return language.response;
 
   const path = type.value === "multi" ? "/search/multi" : `/search/${type.value}`;
-  const upstream = await tmdbFetch<TmdbSearchResponse>(path, {
-    query: q.value,
-    page: page.value,
-    include_adult: "false",
-    language: language.value,
-  });
+  let upstream: Awaited<ReturnType<typeof tmdbFetch<TmdbSearchResponse>>>;
+  try {
+    upstream = await tmdbFetch<TmdbSearchResponse>(path, {
+      callSite: "search.GET",
+      query: {
+        query: q.value,
+        page: page.value,
+        include_adult: "false",
+        language: language.value,
+      },
+    });
+  } catch (error) {
+    if (error instanceof MissingTmdbTokenError) {
+      return errorJson(500, "config_error", error.message);
+    }
+    throw error;
+  }
   if (!upstream.ok) return upstream.response;
 
   const results = (upstream.data.results ?? []).map((item) => {

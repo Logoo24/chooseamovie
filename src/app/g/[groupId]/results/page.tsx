@@ -1,33 +1,60 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { GroupTabs } from "@/components/GroupTabs";
 import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
 import { Button, Card, CardTitle, Muted, Pill } from "@/components/ui";
 import { getActiveMember } from "@/lib/ratings";
-import { listGroupMembers } from "@/lib/memberStore";
 import { getShortlist, type ShortlistItem, type ShortlistSnapshot } from "@/lib/shortlistStore";
 import { loadGroup, type Group } from "@/lib/storage";
-import { ensureAnonymousSession } from "@/lib/supabase";
-import { getTitleSnapshots, type TitleSnapshot, upsertTitleSnapshot } from "@/lib/titleCacheStore";
+import { ensureAuth } from "@/lib/api";
+import { getTitleSnapshots, type TitleSnapshot } from "@/lib/titleCacheStore";
 import { parseTmdbTitleKey } from "@/lib/tmdbTitleKey";
 import { getGroupTopTitles, type GroupTopTitle } from "@/lib/topTitlesStore";
-import { TITLES, titleSearchUrl } from "@/lib/titles";
+import { getGroupRatings } from "@/lib/ratingStore";
 import { type Member } from "@/lib/ratings";
+
+const TOP_LIMIT_OPTIONS = [10, 20, 50, 100] as const;
 
 function starsText(avg: number) {
   if (!avg) return "-";
   return avg.toFixed(2);
 }
 
-function starsVisual(avg: number) {
-  const filled = Math.max(0, Math.min(5, Math.round(avg)));
-  const full = String.fromCharCode(9733);
-  const empty = String.fromCharCode(9734);
-  return `${full.repeat(filled)}${empty.repeat(5 - filled)}`;
+function starsFilledCount(value: number) {
+  return Math.max(0, Math.min(5, Math.round(value)));
+}
+
+function StarDisplay({ value, size = "md" }: { value: number; size?: "md" | "lg" }) {
+  const filled = starsFilledCount(value);
+  const sizeClass = size === "lg" ? "text-2xl" : "text-base";
+  const stars = Array.from({ length: 5 }, (_, index) => {
+    const isFilled = index < filled;
+    return (
+      <span
+        key={index}
+        className={
+          isFilled
+            ? "text-[rgb(var(--yellow))] drop-shadow-[0_0_6px_rgba(255,211,92,0.35)]"
+            : "font-light text-white/20"
+        }
+      >
+        {isFilled ? "\u2605" : "\u2606"}
+      </span>
+    );
+  });
+
+  return <span className={`inline-flex items-center gap-0.5 ${sizeClass} leading-none`}>{stars}</span>;
+}
+
+function asNumericRating(value: unknown): number | null {
+  const rating = Number(value);
+  if (!Number.isFinite(rating)) return null;
+  if (rating <= 0) return null;
+  return rating;
 }
 
 function resolveShortlistSnapshotByTitleId(titleId: string, shortlist: ShortlistItem[]) {
@@ -47,7 +74,13 @@ type ResolvedTitle = {
   mediaType: "movie" | "tv";
   posterPath: string | null;
   infoUrl: string;
+  isResolved: boolean;
 };
+
+function googleInfoUrl(title: string, mediaType: "movie" | "tv") {
+  const suffix = mediaType === "movie" ? "movie" : "show";
+  return `https://www.google.com/search?q=${encodeURIComponent(`${title} ${suffix}`)}`;
+}
 
 function resolveTitleData({
   group,
@@ -63,15 +96,16 @@ function resolveTitleData({
   const snapshot = titleCache[titleId] ?? shortlistFallback[titleId] ?? null;
   if (snapshot) {
     const parsed = parseTmdbTitleKey(titleId);
-    const infoUrl = parsed
-      ? `https://www.themoviedb.org/${parsed.type}/${parsed.id}`
-      : `https://www.themoviedb.org/search?query=${encodeURIComponent(snapshot.title)}`;
+    const mediaType = parsed?.type ?? snapshot.media_type ?? "movie";
+    const title = snapshot.title?.trim() ?? "";
+    const isPlaceholderTitle = title.length === 0 || title === titleId;
     return {
-      title: snapshot.title,
+      title: isPlaceholderTitle ? "Loading title details..." : title,
       year: snapshot.year ?? null,
-      mediaType: snapshot.media_type,
+      mediaType,
       posterPath: snapshot.poster_path ?? null,
-      infoUrl,
+      infoUrl: isPlaceholderTitle ? "#" : googleInfoUrl(title, mediaType),
+      isResolved: !isPlaceholderTitle,
     };
   }
 
@@ -85,47 +119,43 @@ function resolveTitleData({
       year: null,
       mediaType: "movie",
       posterPath: null,
-      infoUrl: `https://www.themoviedb.org/search?query=${encodeURIComponent(fallbackName)}`,
+      infoUrl: googleInfoUrl(fallbackName, "movie"),
+      isResolved: true,
     };
   }
 
   const parsed = parseTmdbTitleKey(titleId);
   if (parsed) {
     return {
-      title: titleId,
+      title: "Loading title details...",
       year: null,
       mediaType: parsed.type,
       posterPath: null,
-      infoUrl: `https://www.themoviedb.org/${parsed.type}/${parsed.id}`,
-    };
-  }
-
-  const t = TITLES.find((x) => x.id === titleId);
-  if (t) {
-    return {
-      title: t.name,
-      year: t.year ? String(t.year) : null,
-      mediaType: t.type === "movie" ? "movie" : "tv",
-      posterPath: null,
-      infoUrl: titleSearchUrl(t),
+      infoUrl: "#",
+      isResolved: false,
     };
   }
 
   return {
-    title: titleId,
+    title: "Loading title details...",
     year: null,
     mediaType: "movie",
     posterPath: null,
-    infoUrl: `https://www.themoviedb.org/search?query=${encodeURIComponent(titleId)}`,
+    infoUrl: "#",
+    isResolved: false,
   };
 }
 
 function ResultCard({
   row,
   resolved,
+  rank,
+  showMediaTypePill,
 }: {
   row: GroupTopTitle;
   resolved: ResolvedTitle;
+  rank: number;
+  showMediaTypePill: boolean;
 }) {
   const posterUrl = resolved.posterPath
     ? `https://image.tmdb.org/t/p/w185${resolved.posterPath}`
@@ -134,24 +164,31 @@ function ResultCard({
   return (
     <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
       <div className="flex items-start gap-3">
+        <div className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/20 bg-white/5 text-xs font-semibold text-white/90">
+          {rank}
+        </div>
         <PosterImage src={posterUrl} alt={resolved.title} className="w-14 shrink-0" />
 
         <div className="min-w-0 flex-1">
-          <a
-            href={resolved.infoUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="block truncate text-sm font-semibold text-white hover:underline"
-          >
-            {resolved.title}
-          </a>
+          {resolved.isResolved ? (
+            <a
+              href={resolved.infoUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="block truncate text-sm font-semibold text-white hover:underline"
+            >
+              {resolved.title}
+            </a>
+          ) : (
+            <div className="block truncate text-sm font-semibold text-white/70">{resolved.title}</div>
+          )}
           <div className="mt-1 flex items-center gap-2 text-xs text-white/65">
-            <span>{resolved.year ?? "Unknown year"}</span>
-            <Pill>{resolved.mediaType === "movie" ? "Movie" : "Show"}</Pill>
+            <span>{resolved.year ?? (resolved.isResolved ? "Unknown year" : "Loading year...")}</span>
+            {showMediaTypePill ? <Pill>{resolved.mediaType === "movie" ? "Movie" : "Show"}</Pill> : null}
           </div>
-          <div className="mt-2 text-sm text-white/85">
-            <span className="font-semibold text-[rgb(var(--yellow))]">{starsVisual(row.avg)}</span>{" "}
-            <span>{starsText(row.avg)}</span>
+          <div className="mt-2 flex items-center gap-2 text-white/95">
+            <StarDisplay value={row.avg} size="lg" />
+            <span className="text-lg font-bold">{starsText(row.avg)}</span>
           </div>
           <div className="mt-1 text-xs text-white/65">{row.votes} rated</div>
         </div>
@@ -163,7 +200,6 @@ function ResultCard({
 export default function ResultsPage() {
   const params = useParams<{ groupId: string }>();
   const groupId = params.groupId;
-  const router = useRouter();
 
   const [group, setGroup] = useState<Group | null>(null);
   const [authBlocked, setAuthBlocked] = useState(false);
@@ -177,6 +213,9 @@ export default function ResultsPage() {
   const [activeMember, setActiveMember] = useState<ReturnType<typeof getActiveMember>>(null);
   const [shortlistFallback, setShortlistFallback] = useState<Record<string, ShortlistSnapshot>>({});
   const [titleCache, setTitleCache] = useState<Record<string, TitleSnapshot>>({});
+  const [perMemberRatings, setPerMemberRatings] = useState<Record<string, Record<string, number>>>({});
+  const [topLimit, setTopLimit] = useState<(typeof TOP_LIMIT_OPTIONS)[number]>(10);
+  const [showMemberRankings, setShowMemberRankings] = useState(false);
   const updatingTimerRef = useRef<number | null>(null);
   const hideTimerRef = useRef<number | null>(null);
   const shownAtRef = useRef<number | null>(null);
@@ -231,7 +270,7 @@ export default function ResultsPage() {
       if (background) beginUpdatingIndicator();
 
       try {
-        const anonUserId = await ensureAnonymousSession();
+        const anonUserId = await ensureAuth();
         if (!alive) return;
         if (!anonUserId) {
           setAuthBlocked(true);
@@ -241,15 +280,16 @@ export default function ResultsPage() {
 
         const [topLoaded, membersLoaded] = await Promise.all([
           getGroupTopTitles(groupId),
-          listGroupMembers(groupId),
+          getGroupRatings(groupId),
         ]);
         if (!alive) return;
 
-        setAccessDenied(Boolean(topLoaded.accessDenied || membersLoaded.error === "forbidden"));
+        setAccessDenied(Boolean(topLoaded.accessDenied || membersLoaded.accessDenied));
         setReadError(
           topLoaded.error === "network" || membersLoaded.error === "network" ? "network" : "none"
         );
         setMembers(membersLoaded.members);
+        setPerMemberRatings(membersLoaded.perMember as Record<string, Record<string, number>>);
         setTopRows((current) => {
           if (topLoaded.rows.length === 0 && current.length > 0) return current;
           return topLoaded.rows;
@@ -279,6 +319,125 @@ export default function ResultsPage() {
     };
   }, [groupId, authRetryKey]);
 
+  useEffect(() => {
+    setTopLimit(10);
+    setShowMemberRankings(false);
+    setShortlistFallback({});
+    setTitleCache({});
+    setPerMemberRatings({});
+  }, [groupId]);
+
+  const memberRatedTitleIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const memberEntries of Object.values(perMemberRatings)) {
+      for (const [titleId, rawRating] of Object.entries(memberEntries)) {
+        if (asNumericRating(rawRating) !== null) {
+          set.add(titleId);
+        }
+      }
+    }
+    return Array.from(set);
+  }, [perMemberRatings]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const shortlist = await getShortlist(groupId);
+      if (!alive) return;
+      const map: Record<string, ShortlistSnapshot> = {};
+      for (const item of shortlist) {
+        map[item.title_id] = item.title_snapshot;
+      }
+      const slRows = Array.from(new Set([...topRows.map((r) => r.titleId), ...memberRatedTitleIds])).filter(
+        (id) => id.startsWith("sl:")
+      );
+      for (const titleId of slRows) {
+        const snapshot = resolveShortlistSnapshotByTitleId(titleId, shortlist);
+        if (snapshot) map[titleId] = snapshot;
+      }
+      setShortlistFallback((current) => {
+        if (Object.keys(map).length === 0) return current;
+        return { ...current, ...map };
+      });
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [groupId, topRows, memberRatedTitleIds]);
+
+  useEffect(() => {
+    let alive = true;
+    const titleIds = Array.from(new Set([...topRows.map((row) => row.titleId), ...memberRatedTitleIds]));
+    if (titleIds.length === 0) return;
+    (async () => {
+      const snapshots = await getTitleSnapshots(titleIds);
+      if (!alive) return;
+      setTitleCache((current) => ({ ...current, ...snapshots }));
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [topRows, memberRatedTitleIds]);
+
+  const allRanked = useMemo(() => {
+    return topRows.filter((row) => row.votes > 0);
+  }, [topRows, memberRatedTitleIds]);
+
+  const top = useMemo(() => {
+    return allRanked.slice(0, topLimit);
+  }, [allRanked, topLimit]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    console.info("[results] group_top_titles rows", {
+      groupId,
+      receivedRows: topRows.length,
+      rankedRows: allRanked.length,
+      selectedCount: topLimit,
+    });
+  }, [groupId, topRows, allRanked.length, topLimit]);
+
+  const resolvedTop = useMemo(() => {
+    if (!group) return [];
+    return top.map((row) => ({
+      row,
+      resolved: resolveTitleData({
+        group,
+        titleId: row.titleId,
+        titleCache,
+        shortlistFallback,
+      }),
+    }));
+  }, [top, titleCache, shortlistFallback, group]);
+
+  const memberRankings = useMemo(() => {
+    if (!group) return [];
+    return members.map((member) => {
+      const memberRows = Object.entries(perMemberRatings[member.id] ?? {})
+        .map(([titleId, rawRating]) => {
+          const rating = asNumericRating(rawRating);
+          if (rating === null) return null;
+          return {
+            titleId,
+            rating,
+            resolved: resolveTitleData({
+              group,
+              titleId,
+              titleCache,
+              shortlistFallback,
+            }),
+          };
+        })
+        .filter((row): row is { titleId: string; rating: number; resolved: ResolvedTitle } => row !== null)
+        .sort((a, b) => {
+          if (b.rating !== a.rating) return b.rating - a.rating;
+          return a.resolved.title.localeCompare(b.resolved.title);
+        });
+
+      return { member, rows: memberRows };
+    });
+  }, [group, members, perMemberRatings, titleCache, shortlistFallback]);
+
   if (authBlocked) {
     return (
       <AppShell>
@@ -295,80 +454,6 @@ export default function ResultsPage() {
     );
   }
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const shortlist = await getShortlist(groupId);
-      if (!alive) return;
-      const map: Record<string, ShortlistSnapshot> = {};
-      for (const item of shortlist) {
-        map[item.title_id] = item.title_snapshot;
-      }
-      const slRows = topRows.map((r) => r.titleId).filter((id) => id.startsWith("sl:"));
-      for (const titleId of slRows) {
-        const snapshot = resolveShortlistSnapshotByTitleId(titleId, shortlist);
-        if (snapshot) map[titleId] = snapshot;
-      }
-      setShortlistFallback(map);
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [groupId, topRows]);
-
-  useEffect(() => {
-    let alive = true;
-    const titleIds = topRows.map((row) => row.titleId);
-    if (titleIds.length === 0) return;
-    (async () => {
-      const snapshots = await getTitleSnapshots(titleIds);
-      if (!alive) return;
-      setTitleCache((current) => ({ ...current, ...snapshots }));
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [topRows]);
-
-  const top = useMemo(() => {
-    return topRows.slice(0, 10);
-  }, [topRows]);
-
-  const resolvedTop = useMemo(() => {
-    if (!group) return [];
-    return top.map((row) => ({
-      row,
-      resolved: resolveTitleData({
-        group,
-        titleId: row.titleId,
-        titleCache,
-        shortlistFallback,
-      }),
-    }));
-  }, [top, titleCache, shortlistFallback, group]);
-
-  useEffect(() => {
-    if (!group) return;
-    for (const row of top) {
-      if (titleCache[row.titleId]) continue;
-      const resolved = resolveTitleData({
-        group,
-        titleId: row.titleId,
-        titleCache,
-        shortlistFallback,
-      });
-      if (!resolved.title) continue;
-      void upsertTitleSnapshot(row.titleId, {
-        title_id: row.titleId,
-        title: resolved.title,
-        year: resolved.year,
-        media_type: resolved.mediaType,
-        poster_path: resolved.posterPath,
-        overview: null,
-      });
-    }
-  }, [group, top, titleCache, shortlistFallback]);
-
   if (!group) {
     return (
       <AppShell>
@@ -383,7 +468,8 @@ export default function ResultsPage() {
     );
   }
 
-  const networkError = readError === "network" && members.length === 0 && top.length === 0;
+  const networkError = readError === "network" && members.length === 0 && allRanked.length === 0;
+  const showMediaTypePill = group.settings.contentType === "movies_and_shows";
 
   if (accessDenied) {
     return (
@@ -461,19 +547,76 @@ export default function ResultsPage() {
               <div className="py-2 text-sm text-white/70">No ratings yet. Go rate a few titles.</div>
             ) : (
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {resolvedTop.map((item) => (
-                  <ResultCard key={item.row.titleId} row={item.row} resolved={item.resolved} />
+                {resolvedTop.map((item, index) => (
+                  <ResultCard
+                    key={`top-${item.row.titleId}`}
+                    row={item.row}
+                    resolved={item.resolved}
+                    rank={index + 1}
+                    showMediaTypePill={showMediaTypePill}
+                  />
                 ))}
               </div>
             )}
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button onClick={() => router.push(`/g/${groupId}/rate`)}>Keep rating</Button>
-            <Button variant="secondary" onClick={() => router.push(`/g/${groupId}`)}>
-              Home
+          {allRanked.length > 0 ? (
+            <div className="mt-4 space-y-2">
+              <div className="text-xs text-white/60">Top list size</div>
+              <div className="flex flex-wrap gap-2">
+                {TOP_LIMIT_OPTIONS.map((limit) => (
+                  <Button
+                    key={limit}
+                    variant={topLimit === limit ? "primary" : "secondary"}
+                    onClick={() => setTopLimit(limit)}
+                  >
+                    Top {limit}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-4">
+            <Button variant="secondary" onClick={() => setShowMemberRankings((v) => !v)}>
+              {showMemberRankings ? "Hide rankings by member" : "View rankings by member"}
             </Button>
           </div>
+
+          {showMemberRankings ? (
+            <div className="mt-4">
+              <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                <div className="text-sm font-semibold text-white">Rankings by member</div>
+                <div className="mt-1 text-xs text-white/60">
+                  Each list is sorted by that member&apos;s highest ratings.
+                </div>
+                <div className="mt-3 space-y-3">
+                  {memberRankings.map(({ member, rows }) => (
+                    <div key={member.id} className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
+                      <div className="text-sm font-semibold text-white">{member.name}</div>
+                      {rows.length === 0 ? (
+                        <div className="mt-2 text-xs text-white/60">No ratings yet.</div>
+                      ) : (
+                        <div className="mt-2 space-y-1.5">
+                          {rows.map((row, index) => (
+                            <div key={`${member.id}-${row.titleId}`} className="flex items-center justify-between gap-3">
+                              <div className="min-w-0 text-sm text-white/85">
+                                <span className="text-white/60">{index + 1}.</span>{" "}
+                                {row.resolved.isResolved ? row.resolved.title : "Loading title details..."}
+                              </div>
+                              <div className="shrink-0 text-sm font-semibold text-[rgb(var(--yellow))]">
+                                <StarDisplay value={row.rating} size="md" />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null}
         </Card>
       </div>
     </AppShell>

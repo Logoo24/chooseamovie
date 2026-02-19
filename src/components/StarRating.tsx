@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type StarRatingProps = {
   value: number;
@@ -21,11 +21,28 @@ export function StarRating({
 }: StarRatingProps) {
   const [hoverValue, setHoverValue] = useState<number | null>(null);
   const [popAt, setPopAt] = useState<number | null>(null);
+  const [canHover, setCanHover] = useState(false);
 
   const activeValue = hoverValue ?? value;
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const media = window.matchMedia("(hover: hover) and (pointer: fine)");
+    const update = () => setCanHover(media.matches);
+    update();
+
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", update);
+      return () => media.removeEventListener("change", update);
+    }
+
+    media.addListener(update);
+    return () => media.removeListener(update);
+  }, []);
+
   function choose(v: 1 | 2 | 3 | 4 | 5) {
     if (disabled) return;
+    setHoverValue(null);
     onChange(v);
     setPopAt(v);
     window.setTimeout(() => setPopAt(null), 170);
@@ -89,8 +106,12 @@ export function StarRating({
               aria-checked={value === n}
               aria-label={`${n} star${n === 1 ? "" : "s"}`}
               disabled={disabled}
-              onMouseEnter={() => setHoverValue(n)}
-              onMouseLeave={() => setHoverValue(null)}
+              onMouseEnter={() => {
+                if (canHover) setHoverValue(n);
+              }}
+              onMouseLeave={() => {
+                if (canHover) setHoverValue(null);
+              }}
               onFocus={() => setHoverValue(n)}
               onBlur={() => setHoverValue(null)}
               onClick={() => choose(n as 1 | 2 | 3 | 4 | 5)}

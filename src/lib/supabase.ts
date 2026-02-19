@@ -21,36 +21,8 @@ if (isValidSupabaseUrl(url) && typeof anonKey === "string" && typeof url === "st
 
 export const supabase = client;
 
-let reachabilityCache: boolean | null = null;
-let reachabilityInFlight: Promise<boolean> | null = null;
-
 export function isSupabaseConfigured() {
   return Boolean(supabase);
-}
-
-export async function checkSupabaseReachable(force = false): Promise<boolean> {
-  if (!supabase) return false;
-  if (!force && reachabilityCache !== null) return reachabilityCache;
-  if (!force && reachabilityInFlight) return reachabilityInFlight;
-
-  reachabilityInFlight = (async () => {
-    try {
-      const { error } = await supabase
-        .from("groups")
-        .select("id", { head: true, count: "exact" })
-        .limit(1);
-      const ok = !error;
-      reachabilityCache = ok;
-      return ok;
-    } catch {
-      reachabilityCache = false;
-      return false;
-    } finally {
-      reachabilityInFlight = null;
-    }
-  })();
-
-  return reachabilityInFlight;
 }
 
 export async function ensureAnonymousSession(): Promise<string | null> {

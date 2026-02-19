@@ -7,9 +7,35 @@ import { Button, Card, CardTitle, Input, Muted, Pill } from "@/components/ui";
 import { createGroup } from "@/lib/groupStore";
 import { markHostForGroup } from "@/lib/hostStore";
 import { getHostDisplayName, setHostDisplayName } from "@/lib/hostProfileStore";
-import { createGroupId, type GroupSettings } from "@/lib/storage";
+import { createGroupId, getEndlessSettings, type GroupSettings } from "@/lib/storage";
 
 type Step = 0 | 1 | 2;
+
+type GenreOption = {
+  id: number;
+  name: string;
+};
+
+type GenreListResponse = {
+  genres?: GenreOption[];
+  error?: { message?: string };
+};
+
+const YEAR_PATTERN = /^\d{4}$/;
+const DATE_RANGE_DEFAULT_FROM_YEAR = 2000;
+
+function extractYear(value: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const match = /^(\d{4})/.exec(trimmed);
+  return match ? match[1] : null;
+}
+
+function toYearBoundaryDate(yearValue: string, boundary: "start" | "end"): string | null {
+  const trimmed = yearValue.trim();
+  if (!YEAR_PATTERN.test(trimmed)) return null;
+  return boundary === "start" ? `${trimmed}-01-01` : `${trimmed}-12-31`;
+}
 
 export default function CreateGroupPage() {
   const router = useRouter();
@@ -37,10 +63,15 @@ export default function CreateGroupPage() {
     allowPG13: true,
     allowR: true,
     allow_members_invite_link: false,
+    top_titles_limit: 100,
     ratingMode: "unlimited",
     shortlistItems: [],
+    endless: getEndlessSettings(undefined),
   });
   const [isCreating, setIsCreating] = useState(false);
+  const [genreOptions, setGenreOptions] = useState<GenreOption[]>([]);
+  const [isLoadingGenres, setIsLoadingGenres] = useState(false);
+  const [genreLoadError, setGenreLoadError] = useState<string | null>(null);
 
   const ratingOptions: Array<{
     key: "allowG" | "allowPG" | "allowPG13" | "allowR";
@@ -57,9 +88,71 @@ export default function CreateGroupPage() {
     setHostName(getHostDisplayName());
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+    setIsLoadingGenres(true);
+    setGenreLoadError(null);
+
+    (async () => {
+      try {
+        const [movieResponse, tvResponse] = await Promise.all([
+          fetch("/api/tmdb/genres?type=movie"),
+          fetch("/api/tmdb/genres?type=tv"),
+        ]);
+        const [movieBody, tvBody] = (await Promise.all([
+          movieResponse.json(),
+          tvResponse.json(),
+        ])) as [GenreListResponse, GenreListResponse];
+        if (!alive) return;
+
+        if (!movieResponse.ok && !tvResponse.ok) {
+          setGenreOptions([]);
+          setGenreLoadError(movieBody.error?.message ?? tvBody.error?.message ?? "Could not load genres.");
+          return;
+        }
+
+        const merged = new Map<number, string>();
+        const mergeGenres = (body: GenreListResponse) => {
+          const list = Array.isArray(body.genres) ? body.genres : [];
+          for (const genre of list) {
+            if (!Number.isInteger(genre.id) || typeof genre.name !== "string") continue;
+            const trimmed = genre.name.trim();
+            if (!trimmed) continue;
+            if (!merged.has(genre.id)) {
+              merged.set(genre.id, trimmed);
+            }
+          }
+        };
+
+        if (movieResponse.ok) mergeGenres(movieBody);
+        if (tvResponse.ok) mergeGenres(tvBody);
+
+        setGenreOptions(
+          Array.from(merged.entries())
+            .map(([id, name]) => ({ id, name }))
+            .sort((a, b) => a.name.localeCompare(b.name))
+        );
+      } catch {
+        if (!alive) return;
+        setGenreOptions([]);
+        setGenreLoadError("Could not load genres.");
+      } finally {
+        if (alive) setIsLoadingGenres(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   const isCustomListMode = settings.ratingMode === "shortlist";
   const atLeastOneRating =
     settings.allowG || settings.allowPG || settings.allowPG13 || settings.allowR;
+  const currentYear = new Date().getFullYear();
+  const hasReleaseYearRange = Boolean(settings.endless.releaseFrom || settings.endless.releaseTo);
+  const releaseFromYear = extractYear(settings.endless.releaseFrom) ?? String(DATE_RANGE_DEFAULT_FROM_YEAR);
+  const releaseToYear = extractYear(settings.endless.releaseTo) ?? String(currentYear);
 
   const canGoStep2 = hostName.trim().length >= 2;
   const canGoStep3 = groupName.trim().length >= 2;
@@ -72,6 +165,24 @@ export default function CreateGroupPage() {
     }
   }
 
+  function setGenreExcluded(genreId: number, excluded: boolean) {
+    setSettings((s) => {
+      const next = new Set(s.endless.excludedGenreIds);
+      if (excluded) {
+        next.add(genreId);
+      } else {
+        next.delete(genreId);
+      }
+      return {
+        ...s,
+        endless: {
+          ...s.endless,
+          excludedGenreIds: Array.from(next).sort((a, b) => a - b),
+        },
+      };
+    });
+  }
+
   function goToNextStep() {
     if (step === 0 && !canGoStep2) return;
     if (step === 1 && !canGoStep3) return;
@@ -81,25 +192,26 @@ export default function CreateGroupPage() {
   async function onCreate() {
     if (!canCreate || isCreating) return;
 
-    const id = createGroupId();
+    const provisionalId = createGroupId();
     setIsCreating(true);
     try {
       setHostDisplayName(hostName);
 
-      await createGroup({
-        id,
+      const created = await createGroup({
+        id: provisionalId,
         name: groupName.trim(),
         createdAt: new Date().toISOString(),
         schemaVersion: 1,
         settings,
       });
 
-      markHostForGroup(id);
+      const groupId = created.group.id;
+      markHostForGroup(groupId);
 
       if (settings.ratingMode === "shortlist") {
-        router.push(`/g/${id}/custom-list?from=create`);
+        router.push(`/g/${groupId}/custom-list?from=create`);
       } else {
-        router.push(`/g/${id}`);
+        router.push(`/g/${groupId}`);
       }
     } finally {
       setIsCreating(false);
@@ -225,6 +337,31 @@ export default function CreateGroupPage() {
                     </div>
                   </div>
 
+                  <Card>
+                    <CardTitle>Invite sharing</CardTitle>
+                    <div className="mt-3 space-y-2">
+                      <label className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 hover:bg-white/10">
+                        <div>
+                          <div className="text-sm font-semibold">Allow members to share invite link</div>
+                          <div className="text-sm text-white/60">
+                            When on, joined members can copy and share the group invite.
+                          </div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={settings.allow_members_invite_link}
+                          onChange={(e) =>
+                            setSettings((s) => ({
+                              ...s,
+                              allow_members_invite_link: e.target.checked,
+                            }))
+                          }
+                          className="h-5 w-5 accent-[rgb(var(--yellow))]"
+                        />
+                      </label>
+                    </div>
+                  </Card>
+
                   {settings.ratingMode === "unlimited" ? (
                     <div className="space-y-3">
                       <Card>
@@ -233,10 +370,20 @@ export default function CreateGroupPage() {
                           <div
                             role="button"
                             tabIndex={0}
-                            onClick={() => setSettings((s) => ({ ...s, contentType: "movies" }))}
+                            onClick={() =>
+                              setSettings((s) => ({
+                                ...s,
+                                contentType: "movies",
+                                endless: { ...s.endless, mediaType: "movie" },
+                              }))
+                            }
                             onKeyDown={(event) =>
                               onCardKeyDown(event, () =>
-                                setSettings((s) => ({ ...s, contentType: "movies" }))
+                                setSettings((s) => ({
+                                  ...s,
+                                  contentType: "movies",
+                                  endless: { ...s.endless, mediaType: "movie" },
+                                }))
                               )
                             }
                             className={[
@@ -252,10 +399,20 @@ export default function CreateGroupPage() {
                           <div
                             role="button"
                             tabIndex={0}
-                            onClick={() => setSettings((s) => ({ ...s, contentType: "movies_and_shows" }))}
+                            onClick={() =>
+                              setSettings((s) => ({
+                                ...s,
+                                contentType: "movies_and_shows",
+                                endless: { ...s.endless, mediaType: "movies_and_tv" },
+                              }))
+                            }
                             onKeyDown={(event) =>
                               onCardKeyDown(event, () =>
-                                setSettings((s) => ({ ...s, contentType: "movies_and_shows" }))
+                                setSettings((s) => ({
+                                  ...s,
+                                  contentType: "movies_and_shows",
+                                  endless: { ...s.endless, mediaType: "movies_and_tv" },
+                                }))
                               )
                             }
                             className={[
@@ -265,8 +422,114 @@ export default function CreateGroupPage() {
                                 : "border-white/10 bg-white/5 hover:bg-white/10",
                             ].join(" ")}
                           >
-                            <div className="text-sm font-semibold">Movies + Shows</div>
+                            <div className="text-sm font-semibold">Movies + TV</div>
                           </div>
+                        </div>
+                      </Card>
+
+                      <Card>
+                        <CardTitle>Release year range</CardTitle>
+                        <div className="mt-3 space-y-3">
+                          <label className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 hover:bg-white/10">
+                            <div>
+                              <div className="text-sm font-semibold">Use release year range</div>
+                              <div className="text-xs text-white/60">
+                                Limit endless picks to titles released between selected years.
+                              </div>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={hasReleaseYearRange}
+                              onChange={(e) =>
+                                setSettings((s) => ({
+                                  ...s,
+                                  endless: {
+                                    ...s.endless,
+                                    releaseFrom: e.target.checked
+                                      ? `${DATE_RANGE_DEFAULT_FROM_YEAR}-01-01`
+                                      : null,
+                                    releaseTo: e.target.checked ? `${currentYear}-12-31` : null,
+                                  },
+                                }))
+                              }
+                              className="h-4 w-4 accent-[rgb(var(--yellow))]"
+                            />
+                          </label>
+
+                          {hasReleaseYearRange ? (
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <div>
+                                <div className="text-sm font-semibold">From year</div>
+                                <Input
+                                  type="number"
+                                  inputMode="numeric"
+                                  min={1900}
+                                  max={currentYear}
+                                  value={releaseFromYear}
+                                  onChange={(e) =>
+                                    setSettings((s) => ({
+                                      ...s,
+                                      endless: {
+                                        ...s.endless,
+                                        releaseFrom:
+                                          toYearBoundaryDate(e.target.value, "start") ?? s.endless.releaseFrom,
+                                      },
+                                    }))
+                                  }
+                                />
+                              </div>
+                              <div>
+                                <div className="text-sm font-semibold">To year</div>
+                                <Input
+                                  type="number"
+                                  inputMode="numeric"
+                                  min={1900}
+                                  max={currentYear}
+                                  value={releaseToYear}
+                                  onChange={(e) =>
+                                    setSettings((s) => ({
+                                      ...s,
+                                      endless: {
+                                        ...s.endless,
+                                        releaseTo:
+                                          toYearBoundaryDate(e.target.value, "end") ?? s.endless.releaseTo,
+                                      },
+                                    }))
+                                  }
+                                />
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      </Card>
+
+                      <Card>
+                        <CardTitle>Filter out unpopular releases</CardTitle>
+                        <div className="mt-3 space-y-3">
+                          <label className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 hover:bg-white/10">
+                            <div>
+                              <div className="text-sm font-semibold">Filter out unpopular releases</div>
+                              <div className="text-xs text-white/60">
+                                Filters out titles most people may not know yet, including very new
+                                low-vote releases.
+                              </div>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={settings.endless.filterUnpopular}
+                              onChange={(e) =>
+                                setSettings((s) => ({
+                                  ...s,
+                                  endless: {
+                                    ...s.endless,
+                                    filterUnpopular: e.target.checked,
+                                    minVoteCount: e.target.checked ? 200 : null,
+                                  },
+                                }))
+                              }
+                              className="h-4 w-4 accent-[rgb(var(--yellow))]"
+                            />
+                          </label>
                         </div>
                       </Card>
 
@@ -300,9 +563,69 @@ export default function CreateGroupPage() {
                       </Card>
 
                       <Card>
-                        <CardTitle>Categories</CardTitle>
-                        <div className="mt-2">
-                          <Muted>Coming soon: genre/category preferences for better recommendations.</Muted>
+                        <CardTitle>Exclude genres</CardTitle>
+                        <div className="mt-2 text-sm text-white/70">
+                          All genres are included by default. Select genres below to exclude them.
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            onClick={() =>
+                              setSettings((s) => ({
+                                ...s,
+                                endless: { ...s.endless, excludedGenreIds: [] },
+                              }))
+                            }
+                            disabled={settings.endless.excludedGenreIds.length === 0}
+                          >
+                            Exclude none
+                          </Button>
+                          <span className="text-xs text-white/55">
+                            {settings.endless.excludedGenreIds.length} excluded
+                          </span>
+                        </div>
+                        <div className="mt-3">
+                          {isLoadingGenres ? (
+                            <Muted>Loading genres...</Muted>
+                          ) : genreLoadError ? (
+                            <div className="rounded-xl border border-[rgb(var(--red))]/40 bg-[rgb(var(--red))]/10 p-3 text-sm text-white">
+                              {genreLoadError}
+                            </div>
+                          ) : genreOptions.length === 0 ? (
+                            <Muted>No genres available right now.</Muted>
+                          ) : (
+                            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                              {genreOptions.map((genre) => {
+                                const isExcluded = settings.endless.excludedGenreIds.includes(genre.id);
+                                return (
+                                  <button
+                                    key={genre.id}
+                                    type="button"
+                                    aria-pressed={isExcluded}
+                                    onClick={() => setGenreExcluded(genre.id, !isExcluded)}
+                                    className={[
+                                      "flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition",
+                                      isExcluded
+                                        ? "border-white/15 bg-white/20 text-white/55 hover:bg-white/25"
+                                        : "border-white/10 bg-white/5 text-white/90 hover:bg-white/10",
+                                    ].join(" ")}
+                                  >
+                                    <span className={["text-sm", isExcluded ? "line-through" : ""].join(" ")}>
+                                      {genre.name}
+                                    </span>
+                                    <span
+                                      className={[
+                                        "rounded-full px-2 py-0.5 text-[11px]",
+                                        isExcluded ? "bg-white/20 text-white/70" : "bg-white/10 text-white/65",
+                                      ].join(" ")}
+                                    >
+                                      {isExcluded ? "Excluded" : "Included"}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       </Card>
 

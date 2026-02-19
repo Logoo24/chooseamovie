@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect } from "react";
-import { ensureAnonymousSession } from "@/lib/supabase";
+import { ensureAuth } from "@/lib/api";
 
 export function AuthBootstrap() {
   useEffect(() => {
-    void ensureAnonymousSession();
+    void ensureAuth();
   }, []);
 
   return null;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { GroupTabs } from "@/components/GroupTabs";
 import { PosterImage } from "@/components/PosterImage";
@@ -10,15 +10,20 @@ import { Button, Card, CardTitle, Input, Muted, Pill } from "@/components/ui";
 import { customListLabel, isCustomListMode, ratingModeLabel } from "@/lib/groupLabels";
 import { getGroup } from "@/lib/groupStore";
 import { isHostForGroup } from "@/lib/hostStore";
-import { joinGroupMember, listGroupMembers, removeGroupMember } from "@/lib/memberStore";
+import {
+  getCurrentGroupMember,
+  joinGroupMember,
+  listGroupMembers,
+  removeGroupMember,
+} from "@/lib/memberStore";
 import { getGroupRatings, type GroupRatingsResult } from "@/lib/ratingStore";
 import { getActiveMember, setActiveMember, type Member } from "@/lib/ratings";
 import { getShortlist, type ShortlistItem, type ShortlistSnapshot } from "@/lib/shortlistStore";
-import { ensureAnonymousSession, getCurrentUserId } from "@/lib/supabase";
-import { getTitleSnapshots, type TitleSnapshot, upsertTitleSnapshot } from "@/lib/titleCacheStore";
+import { ensureAuth, getAuthUserId } from "@/lib/api";
+import { getTitleSnapshots, type TitleSnapshot } from "@/lib/titleCacheStore";
 import { parseTmdbTitleKey } from "@/lib/tmdbTitleKey";
 import { getGroupTopTitles, type GroupTopTitle } from "@/lib/topTitlesStore";
-import { TITLES, titleSearchUrl } from "@/lib/titles";
+import { TITLES } from "@/lib/titles";
 import { type Group } from "@/lib/storage";
 
 function ratingLabel(group: Group) {
@@ -28,6 +33,18 @@ function ratingLabel(group: Group) {
   if (group.settings.allowPG13) allowed.push("PG-13");
   if (group.settings.allowR) allowed.push("R");
   return allowed.join(", ");
+}
+
+function releaseYearRangeLabel(group: Group) {
+  if (group.settings.ratingMode !== "unlimited") {
+    return "Not used in custom list mode";
+  }
+  const from = group.settings.endless.releaseFrom?.slice(0, 4) ?? null;
+  const to = group.settings.endless.releaseTo?.slice(0, 4) ?? null;
+  if (from && to) return `${from} to ${to}`;
+  if (from) return `${from}+`;
+  if (to) return `Up to ${to}`;
+  return "Any year";
 }
 
 function resolveShortlistSnapshotByTitleId(titleId: string, shortlist: ShortlistItem[]) {
@@ -49,6 +66,11 @@ type PreviewResolved = {
   infoUrl: string;
 };
 
+function googleInfoUrl(title: string, mediaType: "movie" | "tv") {
+  const suffix = mediaType === "movie" ? "movie" : "show";
+  return `https://www.google.com/search?q=${encodeURIComponent(`${title} ${suffix}`)}`;
+}
+
 function resolvePreviewTitle(
   group: Group,
   titleId: string,
@@ -58,15 +80,13 @@ function resolvePreviewTitle(
   const snapshot = titleCache[titleId] ?? shortlistFallback[titleId] ?? null;
   if (snapshot) {
     const parsed = parseTmdbTitleKey(titleId);
-    const infoUrl = parsed
-      ? `https://www.themoviedb.org/${parsed.type}/${parsed.id}`
-      : `https://www.themoviedb.org/search?query=${encodeURIComponent(snapshot.title)}`;
+    const mediaType = parsed?.type ?? snapshot.media_type;
     return {
       title: snapshot.title,
       year: snapshot.year ?? null,
       mediaType: snapshot.media_type,
       posterPath: snapshot.poster_path ?? null,
-      infoUrl,
+      infoUrl: googleInfoUrl(snapshot.title, mediaType),
     };
   }
 
@@ -80,7 +100,7 @@ function resolvePreviewTitle(
       year: null,
       mediaType: "movie",
       posterPath: null,
-      infoUrl: `https://www.themoviedb.org/search?query=${encodeURIComponent(fallbackName)}`,
+      infoUrl: googleInfoUrl(fallbackName, "movie"),
     };
   }
 
@@ -91,7 +111,7 @@ function resolvePreviewTitle(
       year: null,
       mediaType: parsed.type,
       posterPath: null,
-      infoUrl: `https://www.themoviedb.org/${parsed.type}/${parsed.id}`,
+      infoUrl: googleInfoUrl(titleId, parsed.type),
     };
   }
 
@@ -102,7 +122,7 @@ function resolvePreviewTitle(
       year: match.year ? String(match.year) : null,
       mediaType: match.type === "movie" ? "movie" : "tv",
       posterPath: null,
-      infoUrl: titleSearchUrl(match),
+      infoUrl: googleInfoUrl(match.name, match.type === "movie" ? "movie" : "tv"),
     };
   }
 
@@ -111,7 +131,7 @@ function resolvePreviewTitle(
     year: null,
     mediaType: "movie",
     posterPath: null,
-    infoUrl: `https://www.themoviedb.org/search?query=${encodeURIComponent(titleId)}`,
+    infoUrl: googleInfoUrl(titleId, "movie"),
   };
 }
 
@@ -119,12 +139,26 @@ function starsText(avg: number) {
   return avg ? avg.toFixed(2) : "-";
 }
 
+function joinErrorMessage(error: "none" | "invalid_code" | "auth_failed" | "network" | "unknown") {
+  if (error === "invalid_code") {
+    return "This invite link is invalid or expired. Ask the host to share a fresh group link.";
+  }
+  if (error === "auth_failed") {
+    return "Authentication is required before joining. Retry and try again.";
+  }
+  if (error === "network") {
+    return "Network issue while joining. Check your connection and try again.";
+  }
+  if (error === "unknown") {
+    return "Could not join this group right now. Please try again.";
+  }
+  return "";
+}
+
 export default function GroupHubPage() {
   const params = useParams<{ groupId: string }>();
   const groupId = params.groupId;
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const joinCode = searchParams.get("code") ?? "";
 
   const [group, setGroup] = useState<Group | null>(null);
   const [isLoadingGroup, setIsLoadingGroup] = useState(true);
@@ -142,6 +176,9 @@ export default function GroupHubPage() {
   >("none");
   const [nameDraft, setNameDraft] = useState("");
   const [isJoining, setIsJoining] = useState(false);
+  const [joinError, setJoinError] = useState<"none" | "invalid_code" | "auth_failed" | "network" | "unknown">(
+    "none"
+  );
   const [isRemovingMemberId, setIsRemovingMemberId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -151,7 +188,7 @@ export default function GroupHubPage() {
     setAuthBlocked(false);
 
     (async () => {
-      const anonUserId = await ensureAnonymousSession();
+      const anonUserId = await ensureAuth();
       if (!alive) return;
       if (!anonUserId) {
         setAuthBlocked(true);
@@ -159,8 +196,8 @@ export default function GroupHubPage() {
         return;
       }
 
-      const uid = await getCurrentUserId();
-      const loaded = await getGroup(groupId, joinCode || undefined);
+      const uid = await getAuthUserId();
+      const loaded = await getGroup(groupId);
       if (!alive) return;
 
       setGroup(loaded.group);
@@ -173,9 +210,19 @@ export default function GroupHubPage() {
       const host = hostFromOwner || hostFromLocalFlag;
       setIsHost(host);
 
-      const active = getActiveMember(groupId);
-      setActiveMemberState(active);
-      if (active) setNameDraft(active.name);
+      const localActive = getActiveMember(groupId);
+      if (localActive) {
+        setActiveMemberState(localActive);
+        setNameDraft(localActive.name);
+      }
+
+      const mine = await getCurrentGroupMember(groupId);
+      if (!alive) return;
+      if (mine.member) {
+        setActiveMember(groupId, mine.member);
+        setActiveMemberState(mine.member);
+        setNameDraft(mine.member.name);
+      }
 
       setIsLoadingGroup(false);
     })();
@@ -183,7 +230,7 @@ export default function GroupHubPage() {
     return () => {
       alive = false;
     };
-  }, [groupId, joinCode, authRetryKey]);
+  }, [groupId, authRetryKey]);
 
   useEffect(() => {
     if (!group || authBlocked) return;
@@ -237,10 +284,8 @@ export default function GroupHubPage() {
 
   const inviteLink = useMemo(() => {
     if (typeof window === "undefined") return "";
-    const base = `${window.location.origin}/g/${groupId}`;
-    if (!group?.joinCode) return base;
-    return `${base}?code=${group.joinCode}`;
-  }, [groupId, group?.joinCode]);
+    return `${window.location.origin}/g/${groupId}`;
+  }, [groupId]);
 
   const shouldHideInviteLink = Boolean(
     group && !isHost && activeMember && !group.settings.allow_members_invite_link
@@ -292,35 +337,32 @@ export default function GroupHubPage() {
     };
   }, [topThree]);
 
-  useEffect(() => {
-    if (!group) return;
-    for (const row of topThree) {
-      if (titleCache[row.titleId]) continue;
-      const resolved = resolvePreviewTitle(group, row.titleId, titleCache, shortlistFallback);
-      if (!resolved.title) continue;
-      void upsertTitleSnapshot(row.titleId, {
-        title_id: row.titleId,
-        title: resolved.title,
-        year: resolved.year,
-        media_type: resolved.mediaType,
-        poster_path: resolved.posterPath,
-        overview: null,
-      });
-    }
-  }, [group, topThree, titleCache, shortlistFallback]);
-
   async function continueToRating() {
     const trimmed = nameDraft.trim();
     if (trimmed.length < 2) return;
-    if (!joinCode) return;
 
+    setJoinError("none");
     setIsJoining(true);
     try {
-      const joined = await joinGroupMember(groupId, trimmed, joinCode);
-      if (!joined.member) return;
+      const joined = await joinGroupMember(groupId, trimmed);
+      if (!joined.member) {
+        const nextError = joined.error === "none" ? "unknown" : joined.error;
+        setJoinError(nextError);
+        if (nextError === "invalid_code" && process.env.NODE_ENV === "development") {
+          console.debug("[joinGroup] invalid invite link", { groupId });
+        }
+        if (nextError === "auth_failed") {
+          setAuthBlocked(true);
+        }
+        return;
+      }
 
       setActiveMember(groupId, joined.member);
       setActiveMemberState(joined.member);
+      const refreshed = await getGroup(groupId);
+      if (refreshed.group) {
+        setGroup(refreshed.group);
+      }
       router.push(`/g/${groupId}/rate`);
     } finally {
       setIsJoining(false);
@@ -329,6 +371,7 @@ export default function GroupHubPage() {
 
   async function removeMember(member: Member) {
     if (!isHost) return;
+    if (activeMember?.id === member.id) return;
     if (!window.confirm(`Remove ${member.name} from this group?`)) return;
 
     setIsRemovingMemberId(member.id);
@@ -354,52 +397,54 @@ export default function GroupHubPage() {
   }
 
   if (!group) {
-    if (!joinCode && !isHost) {
+    if (!isHost && loadError !== "network" && loadError !== "auth_failed") {
       return (
         <AppShell>
-          <StateCard
-            title="Invite code required"
-            badge="Ask host"
-            description="Use the full invite link from the host to open this group home."
-            actionHref="/create"
-            actionLabel="Create your own group"
-            actionVariant="secondary"
-          />
+          <Card>
+            <CardTitle>Join to participate</CardTitle>
+            <div className="mt-2">
+              <Muted>This link is the invite. Enter your display name to join this group.</Muted>
+            </div>
+            {joinError !== "none" ? (
+              <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+                {joinErrorMessage(joinError)}
+              </div>
+            ) : null}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder="Your name"
+                autoComplete="off"
+                className="min-w-[220px]"
+              />
+              <Button onClick={continueToRating} disabled={isJoining || nameDraft.trim().length < 2}>
+                {isJoining ? "Joining..." : "Join and rate"}
+              </Button>
+              <Button variant="secondary" onClick={() => router.push("/")}>
+                Back home
+              </Button>
+            </div>
+          </Card>
         </AppShell>
       );
     }
 
     const title =
-      loadError === "invalid_code"
-        ? "Invalid invite link"
-        : loadError === "network"
-          ? "Network error"
-          : loadError === "auth_failed"
-            ? "Authentication required"
-            : "Group not found";
+      loadError === "network"
+        ? "Network error"
+        : loadError === "auth_failed"
+          ? "Authentication required"
+          : "Group not found";
 
     return (
       <AppShell>
         <StateCard
           title={title}
-          badge="Check link"
-          description="Open a valid invite link or create a new group."
-          actionHref="/create"
-          actionLabel="Create a group"
-        />
-      </AppShell>
-    );
-  }
-
-  if (!isHost && !joinCode) {
-    return (
-      <AppShell>
-        <StateCard
-          title="Invite code required"
-          badge="Ask host"
-          description="Open the full invite link from the host to join this group."
-          actionHref="/create"
-          actionLabel="Create your own group"
+          badge="Try again"
+          description="We could not load this group right now."
+          actionHref="/"
+          actionLabel="Back to Home"
           actionVariant="secondary"
         />
       </AppShell>
@@ -442,7 +487,7 @@ export default function GroupHubPage() {
             <Muted>
               {shouldHideInviteLink
                 ? "Ask the host if someone new needs to join."
-                : "Copy and send this link. New members should open the exact URL with the code."}
+                : "Copy and send this link. Opening this URL is enough to join."}
             </Muted>
 
             {!shouldHideInviteLink ? (
@@ -469,6 +514,12 @@ export default function GroupHubPage() {
             {!isHost && !activeMember ? (
               <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
                 <div className="text-sm font-semibold text-white">Join to participate</div>
+                <div className="mt-1 text-sm text-white/65">Enter your display name to join from this link.</div>
+                {joinError !== "none" ? (
+                  <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+                    {joinErrorMessage(joinError)}
+                  </div>
+                ) : null}
                 <div className="mt-2 flex flex-wrap gap-2">
                   <Input
                     value={nameDraft}
@@ -515,6 +566,10 @@ export default function GroupHubPage() {
                   {group.settings.ratingMode === "unlimited" ? ratingLabel(group) : "Custom list mode"}
                 </div>
               </div>
+              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3 sm:col-span-2">
+                <div className="text-sm font-semibold">Release year range</div>
+                <div className="mt-1 text-sm text-white/70">{releaseYearRangeLabel(group)}</div>
+              </div>
             </div>
           </Card>
 
@@ -533,7 +588,7 @@ export default function GroupHubPage() {
                       {member.name}
                       {activeMember?.id === member.id ? <span className="text-white/50"> (you)</span> : null}
                     </div>
-                    {isHost ? (
+                    {isHost && activeMember?.id !== member.id ? (
                       <Button
                         variant="ghost"
                         onClick={() => void removeMember(member)}

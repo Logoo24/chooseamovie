@@ -1,13 +1,43 @@
-import { supabase } from "@/lib/supabase";
-import { ensureAnonymousSession } from "@/lib/supabase";
 import {
-  ensureMemberByName,
-  listMembers,
-  upsertMember,
-  type Member,
-} from "@/lib/ratings";
+  ensureAuth,
+  getAuthUserId,
+  getMemberForCurrentUserInGroup,
+  joinGroup,
+  listMembers as listMembersDb,
+  removeMember,
+  type DbError,
+} from "@/lib/api";
+import { ensureMemberByName, getActiveMember, listMembers, upsertMember, type Member } from "@/lib/ratings";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
-const MEMBERS_TABLE = "members";
+function isNetworkLikeError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return (
+    text.includes("network") ||
+    text.includes("failed to fetch") ||
+    text.includes("fetch failed") ||
+    text.includes("timeout")
+  );
+}
+
+function isForbiddenError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return text.includes("permission denied") || text.includes("row-level security");
+}
+
+function isInvalidJoinCodeError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.code ?? ""} ${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return text.includes("invalid_join_code") || text.includes("join_code") || text.includes("invalid");
+}
+
+function isAuthRequiredError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.code ?? ""} ${error.message ?? ""}`.toLowerCase();
+  return text.includes("auth_required");
+}
 
 function toMember(row: { id: string; name: string; created_at?: string | null }): Member {
   return {
@@ -17,185 +47,166 @@ function toMember(row: { id: string; name: string; created_at?: string | null })
   };
 }
 
+function logJoinAttempt(details: {
+  groupId: string;
+  userId: string | null;
+  outcome: "success" | "error";
+  code?: string | null;
+  message?: string | null;
+}) {
+  if (process.env.NODE_ENV !== "development") return;
+  console.info("[joinGroup]", details);
+}
+
 export async function joinGroupMember(
   groupId: string,
-  name: string,
-  joinCode: string
+  name: string
 ): Promise<{
   member: Member | null;
   error: "none" | "invalid_code" | "auth_failed" | "network" | "unknown";
 }> {
   const trimmed = name.trim();
-  if (!supabase) {
+  if (!isSupabaseConfigured()) {
+    logJoinAttempt({ groupId, userId: null, outcome: "success" });
     return { member: ensureMemberByName(groupId, trimmed), error: "none" };
   }
 
-  const uid = await ensureAnonymousSession();
-  if (!uid) return { member: null, error: "auth_failed" };
+  const userId = await ensureAuth();
+  if (!userId) {
+    logJoinAttempt({
+      groupId,
+      userId: null,
+      outcome: "error",
+      code: "auth_required",
+      message: "Could not establish auth session before join_group.",
+    });
+    return { member: null, error: "auth_failed" };
+  }
 
-  try {
-    const { data, error } = await supabase.rpc("join_group", {
-      p_group_id: groupId,
-      p_name: trimmed,
-      p_join_code: joinCode,
+  const joined = await joinGroup(groupId, groupId, trimmed);
+  if (joined.error) {
+    logJoinAttempt({
+      groupId,
+      userId,
+      outcome: "error",
+      code: joined.error.code,
+      message: joined.error.message,
     });
 
-    if (error) {
-      const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
-      if (text.includes("join_code") || text.includes("invalid")) {
-        return { member: null, error: "invalid_code" };
-      }
-      if (
-        text.includes("network") ||
-        text.includes("failed to fetch") ||
-        text.includes("fetch failed") ||
-        text.includes("timeout")
-      ) {
-        return { member: null, error: "network" };
-      }
-      return { member: null, error: "unknown" };
+    if (isAuthRequiredError(joined.error)) {
+      return { member: null, error: "auth_failed" };
     }
-
-    if (!data) return { member: null, error: "unknown" };
-
-    const row = Array.isArray(data) ? data[0] : data;
-    const member = toMember({
-      id: row.id,
-      name: row.name,
-      created_at: row.created_at,
-    });
-    upsertMember(groupId, member);
-    return { member, error: "none" };
-  } catch (error) {
-    const text = `${error}`.toLowerCase();
-    if (
-      text.includes("network") ||
-      text.includes("failed to fetch") ||
-      text.includes("fetch failed") ||
-      text.includes("timeout")
-    ) {
+    if (isInvalidJoinCodeError(joined.error)) {
+      return { member: null, error: "invalid_code" };
+    }
+    if (isNetworkLikeError(joined.error)) {
       return { member: null, error: "network" };
     }
     return { member: null, error: "unknown" };
   }
+
+  if (!joined.data) return { member: null, error: "unknown" };
+
+  const member = toMember(joined.data);
+  upsertMember(groupId, member);
+  logJoinAttempt({ groupId, userId, outcome: "success" });
+  return { member, error: "none" };
+}
+
+export async function getCurrentGroupMember(groupId: string): Promise<{
+  member: Member | null;
+  error: "none" | "auth_failed" | "network";
+}> {
+  if (!isSupabaseConfigured()) {
+    return { member: getActiveMember(groupId), error: "none" };
+  }
+
+  const userId = await getAuthUserId();
+  if (!userId) {
+    return { member: null, error: "auth_failed" };
+  }
+
+  const mine = await getMemberForCurrentUserInGroup(groupId);
+  if (mine.error) {
+    if (isAuthRequiredError(mine.error)) {
+      return { member: null, error: "auth_failed" };
+    }
+    return { member: null, error: "network" };
+  }
+
+  if (!mine.data) {
+    return { member: null, error: "none" };
+  }
+
+  const member = toMember(mine.data);
+  upsertMember(groupId, member);
+  return { member, error: "none" };
 }
 
 export async function ensureMember(groupId: string, name: string): Promise<Member> {
   const trimmed = name.trim();
-  if (!supabase) return ensureMemberByName(groupId, trimmed);
-  const uid = await ensureAnonymousSession();
-  if (!uid) return ensureMemberByName(groupId, trimmed);
+  if (!isSupabaseConfigured()) return ensureMemberByName(groupId, trimmed);
 
-  try {
-    const { data: existing, error: existingError } = await supabase
-      .from(MEMBERS_TABLE)
-      .select("id, name, created_at")
-      .eq("group_id", groupId)
-      .ilike("name", trimmed)
-      .limit(1)
-      .maybeSingle();
+  const mine = await getMemberForCurrentUserInGroup(groupId);
+  if (mine.data) {
+    const member = toMember(mine.data);
+    upsertMember(groupId, member);
+    return member;
+  }
 
-    if (existingError) return ensureMemberByName(groupId, trimmed);
-
-    if (existing) {
-      const member = toMember(existing);
+  const listed = await listMembersDb(groupId);
+  if (listed.data) {
+    const byName = listed.data.find((row) => row.name.toLowerCase() === trimmed.toLowerCase());
+    if (byName) {
+      const member = toMember(byName);
       upsertMember(groupId, member);
       return member;
     }
-
-    const { data: inserted, error: insertError } = await supabase
-      .from(MEMBERS_TABLE)
-      .insert({
-        id: crypto.randomUUID(),
-        group_id: groupId,
-        name: trimmed,
-        created_at: new Date().toISOString(),
-      })
-      .select("id, name, created_at")
-      .single();
-
-    if (insertError || !inserted) return ensureMemberByName(groupId, trimmed);
-
-    const member = toMember(inserted);
-    upsertMember(groupId, member);
-    return member;
-  } catch {
-    return ensureMemberByName(groupId, trimmed);
   }
+
+  return ensureMemberByName(groupId, trimmed);
 }
 
 export async function listGroupMembers(groupId: string): Promise<{
   members: Member[];
   error: "none" | "network" | "forbidden";
 }> {
-  if (!supabase) {
+  if (!isSupabaseConfigured()) {
     return { members: listMembers(groupId), error: "none" };
   }
 
-  await ensureAnonymousSession();
-
-  try {
-    const { data, error } = await supabase
-      .from(MEMBERS_TABLE)
-      .select("id, name, created_at")
-      .eq("group_id", groupId)
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
-      const forbidden = text.includes("permission denied") || text.includes("row-level security");
-      return {
-        members: listMembers(groupId),
-        error: forbidden ? "forbidden" : "network",
-      };
-    }
-
-    const members = (data ?? []).map((row) =>
-      toMember({
-        id: row.id as string,
-        name: row.name as string,
-        created_at: (row.created_at as string | null) ?? null,
-      })
-    );
-    for (const member of members) {
-      upsertMember(groupId, member);
-    }
-    return { members, error: "none" };
-  } catch {
-    return { members: listMembers(groupId), error: "network" };
+  const listed = await listMembersDb(groupId);
+  if (listed.error) {
+    return {
+      members: listMembers(groupId),
+      error: isForbiddenError(listed.error) ? "forbidden" : "network",
+    };
   }
+
+  const members = (listed.data ?? []).map((row) => toMember(row));
+  for (const member of members) {
+    upsertMember(groupId, member);
+  }
+  return { members, error: "none" };
 }
 
 export async function removeGroupMember(groupId: string, memberId: string): Promise<{
   error: "none" | "network" | "forbidden";
 }> {
-  if (!supabase) {
+  if (!isSupabaseConfigured()) {
     const local = listMembers(groupId).filter((member) => member.id !== memberId);
     localStorage.setItem(`chooseamovie:members:${groupId}`, JSON.stringify(local));
     localStorage.removeItem(`chooseamovie:ratings:${groupId}:${memberId}`);
     return { error: "none" };
   }
 
-  await ensureAnonymousSession();
-
-  try {
-    const { error } = await supabase
-      .from(MEMBERS_TABLE)
-      .delete()
-      .eq("group_id", groupId)
-      .eq("id", memberId);
-
-    if (error) {
-      const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
-      const forbidden = text.includes("permission denied") || text.includes("row-level security");
-      return { error: forbidden ? "forbidden" : "network" };
-    }
-
-    const local = listMembers(groupId).filter((member) => member.id !== memberId);
-    localStorage.setItem(`chooseamovie:members:${groupId}`, JSON.stringify(local));
-    localStorage.removeItem(`chooseamovie:ratings:${groupId}:${memberId}`);
-    return { error: "none" };
-  } catch {
-    return { error: "network" };
+  const removed = await removeMember(groupId, memberId);
+  if (removed.error) {
+    return { error: isForbiddenError(removed.error) ? "forbidden" : "network" };
   }
+
+  const local = listMembers(groupId).filter((member) => member.id !== memberId);
+  localStorage.setItem(`chooseamovie:members:${groupId}`, JSON.stringify(local));
+  localStorage.removeItem(`chooseamovie:ratings:${groupId}:${memberId}`);
+  return { error: "none" };
 }

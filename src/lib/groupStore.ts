@@ -1,5 +1,13 @@
-import { supabase } from "@/lib/supabase";
-import { ensureAnonymousSession, getCurrentUserId } from "@/lib/supabase";
+import {
+  createGroup as createGroupDb,
+  deleteGroup as deleteGroupDb,
+  getGroup as getGroupDb,
+  leaveGroup as leaveGroupDb,
+  listGroupsForUser,
+  updateGroupSettings as updateGroupSettingsDb,
+  type DbError,
+} from "@/lib/api";
+import { getHostDisplayName } from "@/lib/hostProfileStore";
 import { unmarkHostForGroup } from "@/lib/hostStore";
 import { clearLocalGroupRatingsData } from "@/lib/ratings";
 import { clearLocalShortlist } from "@/lib/shortlistStore";
@@ -11,21 +19,17 @@ import {
   type Group,
   type GroupSettings,
 } from "@/lib/storage";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
-const GROUPS_TABLE = "groups";
-const MEMBERS_TABLE = "members";
 let groupsSchemaMismatch = false;
 
-function markGroupsSchemaMismatch(error: {
-  message?: string;
-  details?: string;
-  hint?: string;
-}) {
+function markGroupsSchemaMismatch(error: DbError) {
   groupsSchemaMismatch = true;
   console.error("Supabase groups schema mismatch (400)", {
-    message: error.message ?? null,
-    details: error.details ?? null,
-    hint: error.hint ?? null,
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
+    code: error.code,
   });
 }
 
@@ -38,73 +42,7 @@ function makeJoinCode() {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export type CreateGroupResult = {
-  group: Group;
-  authFailed: boolean;
-};
-
-export async function createGroup(group: Group): Promise<CreateGroupResult> {
-  const uid = await ensureAnonymousSession();
-  const enrichedGroup: Group = {
-    ...group,
-    settings: normalizeGroupSettings(group.settings),
-    joinCode: group.joinCode ?? makeJoinCode(),
-    ownerUserId: uid ?? group.ownerUserId,
-  };
-
-  if (!supabase) {
-    saveGroup(enrichedGroup);
-    return { group: enrichedGroup, authFailed: false };
-  }
-
-  try {
-    const { error, status } = await supabase.from(GROUPS_TABLE).upsert(
-      {
-        id: enrichedGroup.id,
-        name: enrichedGroup.name,
-        created_at: enrichedGroup.createdAt,
-        schema_version: enrichedGroup.schemaVersion,
-        join_code: enrichedGroup.joinCode,
-        owner_user_id: enrichedGroup.ownerUserId ?? null,
-        settings: enrichedGroup.settings,
-      },
-      { onConflict: "id" }
-    );
-
-    if (error) {
-      if (status === 400) {
-        markGroupsSchemaMismatch(error);
-      }
-      saveGroup(enrichedGroup);
-      return { group: enrichedGroup, authFailed: false };
-    }
-
-    if (uid) {
-      await supabase.from(MEMBERS_TABLE).insert({
-        id: crypto.randomUUID(),
-        group_id: enrichedGroup.id,
-        user_id: uid,
-        name: "Host",
-        role: "host",
-        created_at: new Date().toISOString(),
-      });
-    }
-
-    groupsSchemaMismatch = false;
-    saveGroup(enrichedGroup);
-    return { group: enrichedGroup, authFailed: false };
-  } catch {
-    saveGroup(enrichedGroup);
-    return { group: enrichedGroup, authFailed: false };
-  }
-}
-
-export type GetGroupResult = {
-  group: Group | null;
-  error: "none" | "not_found" | "invalid_code" | "auth_failed" | "network";
-};
-
-function isNetworkLikeError(error: { message?: string; details?: string } | null | undefined) {
+function isNetworkLikeError(error: DbError | null | undefined) {
   if (!error) return false;
   const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
   return (
@@ -115,8 +53,88 @@ function isNetworkLikeError(error: { message?: string; details?: string } | null
   );
 }
 
+function isForbiddenLikeError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return text.includes("permission denied") || text.includes("row-level security");
+}
+
+function isAuthRequiredError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.code ?? ""} ${error.message ?? ""}`.toLowerCase();
+  return text.includes("auth_required");
+}
+
+function mapDbGroupToLocal(data: {
+  id: string;
+  name: string;
+  created_at: string;
+  join_code: string | null;
+  owner_user_id: string | null;
+  settings: Record<string, unknown>;
+}): Group {
+  return {
+    id: data.id,
+    name: data.name,
+    createdAt: data.created_at,
+    schemaVersion: 1,
+    joinCode: data.join_code ?? undefined,
+    ownerUserId: data.owner_user_id ?? undefined,
+    settings: normalizeGroupSettings(data.settings as Partial<GroupSettings>),
+  };
+}
+
+export type CreateGroupResult = {
+  group: Group;
+  authFailed: boolean;
+};
+
+export async function createGroup(group: Group): Promise<CreateGroupResult> {
+  const enrichedGroup: Group = {
+    ...group,
+    settings: normalizeGroupSettings(group.settings),
+    joinCode: group.joinCode ?? makeJoinCode(),
+  };
+
+  if (!isSupabaseConfigured()) {
+    saveGroup(enrichedGroup);
+    return { group: enrichedGroup, authFailed: false };
+  }
+
+  const hostName = getHostDisplayName().trim() || "Host";
+  const remote = await createGroupDb(
+    enrichedGroup.name,
+    enrichedGroup.settings as unknown as Record<string, unknown>,
+    enrichedGroup.schemaVersion,
+    hostName
+  );
+
+  if (remote.error) {
+    if (remote.status === 400) {
+      markGroupsSchemaMismatch(remote.error);
+    }
+    saveGroup(enrichedGroup);
+    return { group: enrichedGroup, authFailed: isAuthRequiredError(remote.error) };
+  }
+
+  if (!remote.data) {
+    saveGroup(enrichedGroup);
+    return { group: enrichedGroup, authFailed: false };
+  }
+
+  groupsSchemaMismatch = false;
+  const resolved = mapDbGroupToLocal(remote.data);
+  saveGroup(resolved);
+  return { group: resolved, authFailed: false };
+}
+
+export type GetGroupResult = {
+  group: Group | null;
+  error: "none" | "not_found" | "invalid_code" | "auth_failed" | "network";
+};
+
 export async function getGroup(groupId: string, joinCode?: string): Promise<GetGroupResult> {
-  if (!supabase) {
+  if (!isSupabaseConfigured()) {
     const local = loadGroup(groupId);
     if (!local) return { group: null, error: "not_found" };
     if (joinCode && local.joinCode && local.joinCode !== joinCode) {
@@ -125,59 +143,41 @@ export async function getGroup(groupId: string, joinCode?: string): Promise<GetG
     return { group: local, error: "none" };
   }
 
-  const userId = (await ensureAnonymousSession()) ?? (await getCurrentUserId());
-  if (!userId) return { group: null, error: "auth_failed" };
+  const remote = await getGroupDb(groupId);
 
-  try {
-    let query = supabase
-      .from(GROUPS_TABLE)
-      .select("id, name, created_at, schema_version, join_code, owner_user_id, settings")
-      .eq("id", groupId);
-
-    if (joinCode) {
-      query = query.eq("join_code", joinCode);
+  if (remote.error) {
+    if (remote.status === 400) {
+      markGroupsSchemaMismatch(remote.error);
     }
 
-    const { data, error, status } = await query.maybeSingle();
+    if (isAuthRequiredError(remote.error)) {
+      return { group: null, error: "auth_failed" };
+    }
 
-    if (error) {
-      if (error && status === 400) {
-        markGroupsSchemaMismatch(error);
-      }
-
-      if (isNetworkLikeError(error)) {
-        const local = loadGroup(groupId);
-        return { group: local, error: local ? "none" : "network" };
-      }
-
-      if (joinCode) return { group: null, error: "invalid_code" };
+    if (isNetworkLikeError(remote.error)) {
       const local = loadGroup(groupId);
-      return { group: local, error: local ? "none" : "not_found" };
+      return { group: local, error: local ? "none" : "network" };
     }
 
-    if (!data) {
-      if (joinCode) return { group: null, error: "invalid_code" };
-      const local = loadGroup(groupId);
-      return { group: local, error: local ? "none" : "not_found" };
-    }
-
-    const group: Group = {
-      id: data.id,
-      name: data.name,
-      createdAt: data.created_at,
-      schemaVersion: 1,
-      joinCode: data.join_code ?? undefined,
-      ownerUserId: data.owner_user_id ?? undefined,
-      settings: normalizeGroupSettings(data.settings as GroupSettings),
-    };
-
-    groupsSchemaMismatch = false;
-    saveGroup(group);
-    return { group, error: "none" };
-  } catch {
+    if (joinCode) return { group: null, error: "invalid_code" };
     const local = loadGroup(groupId);
-    return { group: local, error: local ? "none" : "network" };
+    return { group: local, error: local ? "none" : "not_found" };
   }
+
+  if (!remote.data) {
+    if (joinCode) return { group: null, error: "invalid_code" };
+    const local = loadGroup(groupId);
+    return { group: local, error: local ? "none" : "not_found" };
+  }
+
+  const resolved = mapDbGroupToLocal(remote.data);
+  if (joinCode && resolved.joinCode && resolved.joinCode !== joinCode) {
+    return { group: null, error: "invalid_code" };
+  }
+
+  groupsSchemaMismatch = false;
+  saveGroup(resolved);
+  return { group: resolved, error: "none" };
 }
 
 export async function updateGroupSettings(groupId: string, settings: GroupSettings): Promise<{
@@ -193,27 +193,19 @@ export async function updateGroupSettings(groupId: string, settings: GroupSettin
   };
   saveGroup(updated);
 
-  if (!supabase) {
+  if (!isSupabaseConfigured()) {
     return { group: updated, error: "none" };
   }
 
-  await ensureAnonymousSession();
-
-  try {
-    const { error } = await supabase
-      .from(GROUPS_TABLE)
-      .update({ settings })
-      .eq("id", groupId);
-
-    if (error) {
-      if (isNetworkLikeError(error)) return { group: updated, error: "network" };
-      return { group: updated, error: "none" };
+  const remote = await updateGroupSettingsDb(groupId, settings as unknown as Record<string, unknown>);
+  if (remote.error) {
+    if (remote.status === 400) {
+      markGroupsSchemaMismatch(remote.error);
     }
-
-    return { group: updated, error: "none" };
-  } catch {
-    return { group: updated, error: "network" };
+    if (isNetworkLikeError(remote.error)) return { group: updated, error: "network" };
   }
+
+  return { group: updated, error: "none" };
 }
 
 export type MyGroupSummary = {
@@ -228,72 +220,53 @@ export async function getMyGroups(): Promise<{
   joined: MyGroupSummary[];
   error: "none" | "auth_failed" | "network" | "forbidden";
 }> {
-  if (!supabase) return { hosted: [], joined: [], error: "none" };
+  if (!isSupabaseConfigured()) return { hosted: [], joined: [], error: "none" };
 
-  const uid = await getCurrentUserId();
-  if (!uid) return { hosted: [], joined: [], error: "auth_failed" };
-
-  try {
-    const hostedRes = await supabase
-      .from(GROUPS_TABLE)
-      .select("id, name, created_at, owner_user_id")
-      .eq("owner_user_id", uid)
-      .order("created_at", { ascending: false });
-
-    if (hostedRes.error) {
-      const text = `${hostedRes.error.message ?? ""} ${hostedRes.error.details ?? ""}`.toLowerCase();
-      const forbidden = text.includes("permission denied") || text.includes("row-level security");
-      return { hosted: [], joined: [], error: forbidden ? "forbidden" : "network" };
+  const remote = await listGroupsForUser();
+  if (remote.error) {
+    if (isAuthRequiredError(remote.error)) {
+      return { hosted: [], joined: [], error: "auth_failed" };
     }
 
-    const hosted = (hostedRes.data ?? []).map((row) => ({
-      id: row.id as string,
-      name: row.name as string,
-      createdAt: row.created_at as string,
-      ownerUserId: (row.owner_user_id as string | null) ?? undefined,
-    }));
-
-    const memberRes = await supabase
-      .from(MEMBERS_TABLE)
-      .select("group_id")
-      .eq("user_id", uid);
-
-    if (memberRes.error) {
-      const text = `${memberRes.error.message ?? ""} ${memberRes.error.details ?? ""}`.toLowerCase();
-      const forbidden = text.includes("permission denied") || text.includes("row-level security");
-      return { hosted, joined: [], error: forbidden ? "forbidden" : "network" };
+    if (isForbiddenLikeError(remote.error)) {
+      return {
+        hosted: remote.data?.hosted.map((row) => ({
+          id: row.id,
+          name: row.name,
+          createdAt: row.created_at,
+          ownerUserId: row.owner_user_id ?? undefined,
+        })) ?? [],
+        joined: [],
+        error: "forbidden",
+      };
     }
 
-    const hostedIds = new Set(hosted.map((g) => g.id));
-    const joinedIds = Array.from(
-      new Set((memberRes.data ?? []).map((row) => row.group_id as string).filter((id) => !hostedIds.has(id)))
-    );
-
-    if (joinedIds.length === 0) return { hosted, joined: [], error: "none" };
-
-    const joinedRes = await supabase
-      .from(GROUPS_TABLE)
-      .select("id, name, created_at, owner_user_id")
-      .in("id", joinedIds)
-      .order("created_at", { ascending: false });
-
-    if (joinedRes.error) {
-      const text = `${joinedRes.error.message ?? ""} ${joinedRes.error.details ?? ""}`.toLowerCase();
-      const forbidden = text.includes("permission denied") || text.includes("row-level security");
-      return { hosted, joined: [], error: forbidden ? "forbidden" : "network" };
-    }
-
-    const joined = (joinedRes.data ?? []).map((row) => ({
-      id: row.id as string,
-      name: row.name as string,
-      createdAt: row.created_at as string,
-      ownerUserId: (row.owner_user_id as string | null) ?? undefined,
-    }));
-
-    return { hosted, joined, error: "none" };
-  } catch {
-    return { hosted: [], joined: [], error: "network" };
+    return {
+      hosted: remote.data?.hosted.map((row) => ({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at,
+        ownerUserId: row.owner_user_id ?? undefined,
+      })) ?? [],
+      joined: [],
+      error: "network",
+    };
   }
+
+  const hosted = (remote.data?.hosted ?? []).map((row) => ({
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at,
+    ownerUserId: row.owner_user_id ?? undefined,
+  }));
+  const joined = (remote.data?.joined ?? []).map((row) => ({
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at,
+    ownerUserId: row.owner_user_id ?? undefined,
+  }));
+
+  return { hosted, joined, error: "none" };
 }
 
 function cleanupLocalGroupState(groupId: string) {
@@ -306,31 +279,22 @@ function cleanupLocalGroupState(groupId: string) {
 export async function deleteGroup(groupId: string): Promise<{
   error: "none" | "forbidden" | "network";
 }> {
-  if (!supabase) {
+  if (!isSupabaseConfigured()) {
     cleanupLocalGroupState(groupId);
     return { error: "none" };
   }
 
-  await ensureAnonymousSession();
-
-  try {
-    const { error } = await supabase.rpc("delete_group", { p_group_id: groupId });
-    if (!error) {
-      cleanupLocalGroupState(groupId);
-      return { error: "none" };
-    }
-
-    const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
-    if (text.includes("permission denied") || text.includes("row-level security")) {
-      return { error: "forbidden" };
-    }
-    if (isNetworkLikeError(error)) {
-      return { error: "network" };
-    }
-    return { error: "network" };
-  } catch {
-    return { error: "network" };
+  const remote = await deleteGroupDb(groupId);
+  if (!remote.error) {
+    cleanupLocalGroupState(groupId);
+    return { error: "none" };
   }
+
+  if (isForbiddenLikeError(remote.error)) {
+    return { error: "forbidden" };
+  }
+
+  return { error: "network" };
 }
 
 export async function leaveGroup(groupId: string): Promise<{
@@ -338,29 +302,11 @@ export async function leaveGroup(groupId: string): Promise<{
 }> {
   cleanupLocalGroupState(groupId);
 
-  if (!supabase) return { error: "none" };
+  if (!isSupabaseConfigured()) return { error: "none" };
 
-  const uid = await getCurrentUserId();
-  if (!uid) return { error: "auth_failed" };
-
-  try {
-    const { error } = await supabase
-      .from(MEMBERS_TABLE)
-      .delete()
-      .eq("group_id", groupId)
-      .eq("user_id", uid);
-
-    if (!error) return { error: "none" };
-
-    const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
-    if (text.includes("permission denied") || text.includes("row-level security")) {
-      return { error: "forbidden" };
-    }
-    if (isNetworkLikeError(error)) {
-      return { error: "network" };
-    }
-    return { error: "network" };
-  } catch {
-    return { error: "network" };
-  }
+  const remote = await leaveGroupDb(groupId);
+  if (!remote.error) return { error: "none" };
+  if (isAuthRequiredError(remote.error)) return { error: "auth_failed" };
+  if (isForbiddenLikeError(remote.error)) return { error: "forbidden" };
+  return { error: "network" };
 }

@@ -1,6 +1,7 @@
-import { ensureAnonymousSession, supabase } from "@/lib/supabase";
+import { getTitleCacheMany, upsertTitleCache } from "@/lib/api";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { parseTmdbTitleKey } from "@/lib/tmdbTitleKey";
 
-const TITLE_CACHE_TABLE = "title_cache";
 const LOCAL_TITLE_CACHE_KEY = "chooseamovie:title_cache";
 
 export type TitleSnapshot = {
@@ -9,6 +10,21 @@ export type TitleSnapshot = {
   year: string | null;
   media_type: "movie" | "tv";
   poster_path: string | null;
+  overview?: string | null;
+};
+
+type UpsertTitleSnapshotOptions = {
+  callSite?: string;
+  upstreamPayloadKeys?: string[];
+  tmdbSucceeded?: boolean;
+};
+
+type TmdbDetailsBody = {
+  title?: string | null;
+  name?: string | null;
+  release_date?: string | null;
+  first_air_date?: string | null;
+  poster_path?: string | null;
   overview?: string | null;
 };
 
@@ -35,36 +51,121 @@ function upsertLocalSnapshot(titleId: string, snapshot: TitleSnapshot) {
   saveLocalCache(cache);
 }
 
-export async function upsertTitleSnapshot(titleId: string, snapshot: TitleSnapshot): Promise<void> {
+function extractYear(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const match = /^(\d{4})/.exec(raw.trim());
+  return match ? match[1] : null;
+}
+
+function normalizeSnapshot(titleId: string, snapshot: Partial<TitleSnapshot>): TitleSnapshot {
+  const parsed = parseTmdbTitleKey(titleId);
+  const mediaType = snapshot.media_type === "movie" || snapshot.media_type === "tv"
+    ? snapshot.media_type
+    : parsed?.type ?? "movie";
+  const title = typeof snapshot.title === "string" ? snapshot.title.trim() : "";
+  const posterPath = typeof snapshot.poster_path === "string" && snapshot.poster_path.trim()
+    ? snapshot.poster_path
+    : null;
+  const overview = typeof snapshot.overview === "string" || snapshot.overview === null
+    ? snapshot.overview
+    : null;
+
+  return {
+    title_id: titleId,
+    title: title || titleId,
+    year: extractYear(snapshot.year),
+    media_type: mediaType,
+    poster_path: posterPath,
+    overview,
+  };
+}
+
+function shouldHydrateSnapshot(titleId: string, snapshot: TitleSnapshot) {
+  return snapshot.title === titleId || snapshot.year === null;
+}
+
+function logSuspiciousSnapshotUpsert(
+  titleId: string,
+  snapshot: TitleSnapshot,
+  options: UpsertTitleSnapshotOptions
+) {
+  if (process.env.NODE_ENV !== "development") return;
+  const titleEqualsTitleId = snapshot.title === titleId;
+  const hasNullYear = snapshot.year === null;
+  if (!titleEqualsTitleId && !hasNullYear) return;
+  console.warn("[title-cache] suspicious snapshot upsert", {
+    callSite: options.callSite ?? "unknown",
+    titleId,
+    titleEqualsTitleId,
+    hasNullYear,
+    upstreamPayloadKeys: options.upstreamPayloadKeys ?? [],
+  });
+}
+
+function buildSnapshotFromTmdbDetails(
+  titleId: string,
+  body: TmdbDetailsBody
+): TitleSnapshot | null {
+  const parsed = parseTmdbTitleKey(titleId);
+  if (!parsed) return null;
+
+  const title =
+    parsed.type === "movie"
+      ? (body.title ?? "").trim()
+      : (body.name ?? "").trim();
+  if (!title) return null;
+
+  const yearRaw = parsed.type === "movie" ? body.release_date : body.first_air_date;
+  return normalizeSnapshot(titleId, {
+    title_id: titleId,
+    title,
+    year: extractYear(yearRaw),
+    media_type: parsed.type,
+    poster_path: body.poster_path ?? null,
+    overview: body.overview ?? null,
+  });
+}
+
+async function hydrateSnapshotFromTmdbDetails(titleId: string): Promise<{
+  snapshot: TitleSnapshot;
+  payloadKeys: string[];
+} | null> {
+  if (typeof window === "undefined") return null;
+  const parsed = parseTmdbTitleKey(titleId);
+  if (!parsed) return null;
+
+  const response = await fetch(`/api/tmdb/details?type=${parsed.type}&id=${parsed.id}`);
+  if (!response.ok) return null;
+
+  const body = (await response.json()) as TmdbDetailsBody;
+  const snapshot = buildSnapshotFromTmdbDetails(titleId, body);
+  if (!snapshot) return null;
+
+  return {
+    snapshot,
+    payloadKeys: Object.keys(body ?? {}),
+  };
+}
+
+export async function upsertTitleSnapshot(
+  titleId: string,
+  snapshot: TitleSnapshot,
+  options: UpsertTitleSnapshotOptions = {}
+): Promise<void> {
   const id = titleId.trim();
   if (!id) return;
-  upsertLocalSnapshot(id, { ...snapshot, title_id: id });
 
-  if (!supabase) return;
-  await ensureAnonymousSession();
+  const normalized = normalizeSnapshot(id, snapshot);
+  logSuspiciousSnapshotUpsert(id, normalized, options);
 
-  try {
-    await supabase.from(TITLE_CACHE_TABLE).upsert(
-      {
-        title_id: id,
-        snapshot: { ...snapshot, title_id: id },
-      },
-      { onConflict: "title_id" }
-    );
-  } catch {
-    try {
-      // Backward-compatible fallback for older schema naming.
-      await supabase.from(TITLE_CACHE_TABLE).upsert(
-        {
-          title_id: id,
-          title_snapshot: { ...snapshot, title_id: id },
-        },
-        { onConflict: "title_id" }
-      );
-    } catch {
-      // local snapshot remains available
-    }
-  }
+  // Do not write placeholder title_ids as titles unless the caller explicitly indicates TMDB failed.
+  if (normalized.title === id && options.tmdbSucceeded !== false) return;
+
+  upsertLocalSnapshot(id, normalized);
+
+  if (!isSupabaseConfigured()) return;
+
+  await upsertTitleCache(id, normalized as unknown as Record<string, unknown>);
 }
 
 export async function getTitleSnapshots(titleIds: string[]): Promise<Record<string, TitleSnapshot>> {
@@ -73,45 +174,69 @@ export async function getTitleSnapshots(titleIds: string[]): Promise<Record<stri
 
   const local = loadLocalCache();
   const found: Record<string, TitleSnapshot> = {};
-  const missing: string[] = [];
+  const nextLocal = { ...local };
+  const missingFromSupabase: string[] = [];
+  const toHydrate = new Set<string>();
 
   for (const id of deduped) {
-    const snapshot = local[id];
-    if (snapshot) found[id] = snapshot;
-    else missing.push(id);
-  }
-
-  if (!supabase || missing.length === 0) return found;
-  await ensureAnonymousSession();
-
-  try {
-    const primary = await supabase
-      .from(TITLE_CACHE_TABLE)
-      .select("title_id, snapshot")
-      .in("title_id", missing);
-    const fallback =
-      primary.error
-        ? await supabase.from(TITLE_CACHE_TABLE).select("title_id, title_snapshot").in("title_id", missing)
-        : null;
-    const data = !primary.error ? primary.data : fallback?.data;
-    const error = !primary.error ? null : fallback?.error;
-    if (error) return found;
-
-    const nextLocal = { ...local };
-    for (const row of data ?? []) {
-      const id = String(row.title_id);
-      const snapshot = ((row as { snapshot?: TitleSnapshot; title_snapshot?: TitleSnapshot }).snapshot ??
-        (row as { snapshot?: TitleSnapshot; title_snapshot?: TitleSnapshot }).title_snapshot) as
-        | TitleSnapshot
-        | undefined;
-      if (!snapshot) continue;
-      const normalized: TitleSnapshot = { ...snapshot, title_id: id };
-      found[id] = normalized;
-      nextLocal[id] = normalized;
+    const localSnapshot = local[id];
+    if (!localSnapshot) {
+      missingFromSupabase.push(id);
+      continue;
     }
-    saveLocalCache(nextLocal);
-    return found;
-  } catch {
-    return found;
+
+    const normalized = normalizeSnapshot(id, localSnapshot);
+    found[id] = normalized;
+    nextLocal[id] = normalized;
+    if (shouldHydrateSnapshot(id, normalized)) {
+      toHydrate.add(id);
+    }
   }
+
+  if (isSupabaseConfigured() && missingFromSupabase.length > 0) {
+    const remote = await getTitleCacheMany(missingFromSupabase);
+    if (!remote.error) {
+      for (const row of remote.data ?? []) {
+        const id = String(row.title_id);
+        const snapshot = row.snapshot as Partial<TitleSnapshot> | null;
+        if (!snapshot) continue;
+        const normalized = normalizeSnapshot(id, snapshot);
+        found[id] = normalized;
+        nextLocal[id] = normalized;
+        if (shouldHydrateSnapshot(id, normalized)) {
+          toHydrate.add(id);
+        }
+      }
+    }
+  }
+
+  for (const id of deduped) {
+    if (!found[id]) {
+      toHydrate.add(id);
+    }
+  }
+
+  if (typeof window !== "undefined" && toHydrate.size > 0) {
+    const hydrated = await Promise.all(
+      Array.from(toHydrate).map(async (id) => {
+        const resolved = await hydrateSnapshotFromTmdbDetails(id);
+        if (!resolved) return null;
+        await upsertTitleSnapshot(id, resolved.snapshot, {
+          callSite: "titleCacheStore.hydrateFromTmdbDetails",
+          upstreamPayloadKeys: resolved.payloadKeys,
+          tmdbSucceeded: true,
+        });
+        return { id, snapshot: resolved.snapshot };
+      })
+    );
+
+    for (const item of hydrated) {
+      if (!item) continue;
+      found[item.id] = item.snapshot;
+      nextLocal[item.id] = item.snapshot;
+    }
+  }
+
+  saveLocalCache(nextLocal);
+  return found;
 }

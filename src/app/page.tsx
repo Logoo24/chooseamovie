@@ -164,8 +164,8 @@ export default function Home() {
                 <Link href="/create">
                   <Button>Create group</Button>
                 </Link>
-                <Button variant="secondary" disabled title="Join with code coming soon">
-                  Join with code
+                <Button variant="secondary" disabled title="Open invite link in your browser">
+                  Open invite link
                 </Button>
               </div>
             </div>

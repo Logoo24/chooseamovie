@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
 import {
+  errorJson,
+  MissingTmdbTokenError,
   okJson,
   parseEnum,
   parsePositiveInt,
@@ -15,6 +17,8 @@ type TmdbGenre = {
 };
 
 type TmdbDetailsResponse = {
+  title?: string | null;
+  name?: string | null;
   genres?: TmdbGenre[];
   runtime?: number | null;
   episode_run_time?: number[] | null;
@@ -26,7 +30,35 @@ type TmdbDetailsResponse = {
   backdrop_path?: string | null;
   release_date?: string | null;
   first_air_date?: string | null;
+  release_dates?: {
+    results?: Array<{
+      iso_3166_1?: string | null;
+      release_dates?: Array<{
+        certification?: string | null;
+      }>;
+    }>;
+  };
 };
+
+function normalizeMpaa(certification: string | null | undefined) {
+  const raw = (certification ?? "").trim().toUpperCase();
+  if (!raw) return null;
+  if (raw === "PG13") return "PG-13";
+  return raw;
+}
+
+function extractUsMovieMpaa(
+  releaseDates: TmdbDetailsResponse["release_dates"]
+): string | null {
+  const regions = releaseDates?.results ?? [];
+  const us = regions.find((region) => region.iso_3166_1 === "US");
+  if (!us) return null;
+  for (const entry of us.release_dates ?? []) {
+    const normalized = normalizeMpaa(entry.certification);
+    if (normalized) return normalized;
+  }
+  return null;
+}
 
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
@@ -40,15 +72,28 @@ export async function GET(request: NextRequest) {
   const language = validateLanguage(searchParams.get("language"));
   if (!language.ok) return language.response;
 
-  const upstream = await tmdbFetch<TmdbDetailsResponse>(`/${type.value}/${id.value}`, {
-    language: language.value,
-  });
+  let upstream: Awaited<ReturnType<typeof tmdbFetch<TmdbDetailsResponse>>>;
+  try {
+    upstream = await tmdbFetch<TmdbDetailsResponse>(`/${type.value}/${id.value}`, {
+      callSite: "details.GET",
+      query: {
+        language: language.value,
+        append_to_response: type.value === "movie" ? "release_dates" : undefined,
+      },
+    });
+  } catch (error) {
+    if (error instanceof MissingTmdbTokenError) {
+      return errorJson(500, "config_error", error.message);
+    }
+    throw error;
+  }
   if (!upstream.ok) return upstream.response;
 
   const data = upstream.data;
 
   if (type.value === "movie") {
     return okJson({
+      title: data.title ?? null,
       genres: (data.genres ?? []).map((genre) => ({ id: genre.id, name: genre.name })),
       runtime: data.runtime ?? null,
       original_language: data.original_language ?? null,
@@ -58,10 +103,12 @@ export async function GET(request: NextRequest) {
       poster_path: data.poster_path ?? null,
       backdrop_path: data.backdrop_path ?? null,
       release_date: data.release_date ?? null,
+      mpaa_rating: extractUsMovieMpaa(data.release_dates),
     });
   }
 
   return okJson({
+    name: data.name ?? null,
     genres: (data.genres ?? []).map((genre) => ({ id: genre.id, name: genre.name })),
     episode_run_time: data.episode_run_time ?? [],
     original_language: data.original_language ?? null,

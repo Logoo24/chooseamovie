@@ -51,7 +51,7 @@ Must include:
 - Hero promo section for ChooseAMovie.
 - Two CTAs:
   1) **Create group** (primary)
-  2) **Join with code** (placeholder for now, disabled or placeholder route)
+  2) **Open invite link** (placeholder for now, disabled or placeholder route)
 - “My groups” section:
   - Shows groups user hosts or has joined.
   - Each group card links to that group’s Hub.
@@ -174,7 +174,8 @@ Rules:
 ## Data and security rules (high level)
 - Supabase is the source of truth for cross-device features.
 - Anonymous auth is required before any writes.
-- Invite links require `?code=` (join_code).
+- Invite links are the group URL `/g/<groupId>`.
+- Join RPC uses `p_join_code = groupId` (UUID string from URL).
 - Join uses `join_group` RPC.
 - RLS must enforce that only members can read/write group data.
 

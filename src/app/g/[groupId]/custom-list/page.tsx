@@ -9,6 +9,7 @@ import { Button, Card, CardTitle, Input, Muted, Pill } from "@/components/ui";
 import { customListLabel, isCustomListMode } from "@/lib/groupLabels";
 import { getGroup, updateGroupSettings } from "@/lib/groupStore";
 import { isHostForGroup } from "@/lib/hostStore";
+import { ensureAuth, getAuthUserId } from "@/lib/api";
 import {
   addToShortlist,
   getShortlist,
@@ -18,7 +19,6 @@ import {
   type ShortlistMediaType,
   type ShortlistSnapshot,
 } from "@/lib/shortlistStore";
-import { ensureAnonymousSession, getCurrentUserId } from "@/lib/supabase";
 import { buildTmdbTitleKey } from "@/lib/tmdbTitleKey";
 import { upsertTitleSnapshot } from "@/lib/titleCacheStore";
 import { loadGroup, saveGroup, type Group } from "@/lib/storage";
@@ -44,12 +44,20 @@ const POSTER_BASE = "https://image.tmdb.org/t/p/w185";
 const SUGGESTIONS_KEY = (groupId: string) => `chooseamovie:suggestions:${groupId}`;
 
 function titleFromSearch(item: SearchItem) {
+  if (item.media_type === "movie") return item.title ?? item.name ?? "Untitled";
+  if (item.media_type === "tv") return item.name ?? item.title ?? "Untitled";
   return item.title ?? item.name ?? "Untitled";
 }
 
+function extractYear(raw: string | null | undefined) {
+  if (!raw) return null;
+  const match = /^(\d{4})/.exec(raw.trim());
+  return match ? match[1] : null;
+}
+
 function yearFromSearch(item: SearchItem) {
-  const raw = item.release_date ?? item.first_air_date ?? "";
-  return raw.length >= 4 ? raw.slice(0, 4) : null;
+  const raw = item.media_type === "tv" ? item.first_air_date : item.release_date;
+  return extractYear(raw);
 }
 
 function mediaLabel(mediaType: "movie" | "tv" | null) {
@@ -105,7 +113,7 @@ export default function CustomListPage() {
     setAuthBlocked(false);
 
     (async () => {
-      const anonUserId = await ensureAnonymousSession();
+      const anonUserId = await ensureAuth();
       if (!alive) return;
       if (!anonUserId) {
         setAuthBlocked(true);
@@ -113,7 +121,7 @@ export default function CustomListPage() {
         return;
       }
 
-      const uid = await getCurrentUserId();
+      const uid = await getAuthUserId();
       const loaded = await getGroup(groupId);
       if (!alive) return;
 
@@ -290,6 +298,10 @@ export default function CustomListPage() {
         media_type: snapshot.media_type,
         poster_path: snapshot.poster_path,
         overview: item.overview ?? null,
+      }, {
+        callSite: "CustomListPage.onAdd",
+        upstreamPayloadKeys: Object.keys(item),
+        tmdbSucceeded: true,
       });
       await refreshShortlist();
       setQuery("");
