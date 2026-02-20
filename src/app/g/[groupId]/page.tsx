@@ -153,6 +153,11 @@ function starsText(avg: number) {
   return avg ? avg.toFixed(2) : "-";
 }
 
+function percentText(value: number) {
+  if (!Number.isFinite(value)) return "0.0%";
+  return `${value.toFixed(1)}%`;
+}
+
 function joinErrorMessage(error: "none" | "invalid_code" | "auth_failed" | "network" | "unknown") {
   if (error === "invalid_code") {
     return "This invite link is invalid or expired. Ask the host to share a fresh group link.";
@@ -305,15 +310,58 @@ export default function GroupHubPage() {
     group && !isHost && activeMember && !group.settings.allow_members_invite_link
   );
 
-  const totalRatings = useMemo(() => {
-    if (!ratings) return 0;
-    return Object.values(ratings.perMember).reduce((total, perMember) => {
-      return total + Object.keys(perMember).length;
-    }, 0);
-  }, [ratings]);
+  const stats = useMemo(() => {
+    if (!ratings) {
+      return {
+        totalSubmitted: 0,
+        totalRatings: 0,
+        skipCount: 0,
+        participationCount: 0,
+        participationRate: 0,
+        avgRatingsPerMember: 0,
+        skipRate: 0,
+      };
+    }
+
+    let totalSubmitted = 0;
+    let totalRatings = 0;
+    let skipCount = 0;
+    const participatingMembers = new Set<string>();
+
+    for (const [memberId, perMember] of Object.entries(ratings.perMember)) {
+      let hasStarRating = false;
+      for (const value of Object.values(perMember)) {
+        totalSubmitted += 1;
+        if (value === 0) {
+          skipCount += 1;
+        } else if (value > 0) {
+          totalRatings += 1;
+          hasStarRating = true;
+        }
+      }
+      if (hasStarRating) {
+        participatingMembers.add(memberId);
+      }
+    }
+
+    const memberCount = members.length;
+    const participationRate = memberCount > 0 ? (participatingMembers.size / memberCount) * 100 : 0;
+    const avgRatingsPerMember = memberCount > 0 ? totalRatings / memberCount : 0;
+    const skipRate = totalSubmitted > 0 ? (skipCount / totalSubmitted) * 100 : 0;
+
+    return {
+      totalSubmitted,
+      totalRatings,
+      skipCount,
+      participationCount: participatingMembers.size,
+      participationRate,
+      avgRatingsPerMember,
+      skipRate,
+    };
+  }, [ratings, members.length]);
 
   const topThree = useMemo(() => {
-    return topRows.slice(0, 3);
+    return topRows.filter((row) => row.votes > 0).slice(0, 3);
   }, [topRows]);
 
   useEffect(() => {
@@ -641,14 +689,33 @@ export default function GroupHubPage() {
 
           <Card>
             <CardTitle>Stats</CardTitle>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               <div className="rounded-xl border border-white/12 bg-black/28 p-3">
                 <div className="text-sm font-semibold">Total ratings</div>
-                <div className="mt-1 text-sm text-white/70">{totalRatings}</div>
+                <div className="mt-1 text-sm text-white/70">{stats.totalRatings}</div>
+                <div className="mt-1 text-xs text-white/55">Star ratings only</div>
               </div>
               <div className="rounded-xl border border-white/12 bg-black/28 p-3">
                 <div className="text-sm font-semibold">Members</div>
                 <div className="mt-1 text-sm text-white/70">{members.length}</div>
+              </div>
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3">
+                <div className="text-sm font-semibold">Participation rate</div>
+                <div className="mt-1 text-sm text-white/70">{percentText(stats.participationRate)}</div>
+                <div className="mt-1 text-xs text-white/55">
+                  {stats.participationCount}/{members.length} members rated
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3">
+                <div className="text-sm font-semibold">Avg ratings/member</div>
+                <div className="mt-1 text-sm text-white/70">{stats.avgRatingsPerMember.toFixed(2)}</div>
+              </div>
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3">
+                <div className="text-sm font-semibold">Skip rate</div>
+                <div className="mt-1 text-sm text-white/70">{percentText(stats.skipRate)}</div>
+                <div className="mt-1 text-xs text-white/55">
+                  {stats.skipCount}/{stats.totalSubmitted} submissions
+                </div>
               </div>
             </div>
           </Card>
@@ -689,8 +756,14 @@ export default function GroupHubPage() {
                             </div>
                           </div>
                           <div className="text-right text-xs text-white/70">
-                            <div>{starsText(row.avg)} avg</div>
-                            <div>{row.votes} rated</div>
+                            <div className="inline-flex items-center gap-1 rounded-lg border border-[rgb(var(--yellow))]/35 bg-[rgb(var(--yellow))]/12 px-2 py-0.5 text-base font-bold text-white">
+                              <span>{row.totalStars}</span>
+                              <span className="text-[rgb(var(--yellow))]">{"\u2605"}</span>
+                            </div>
+                            <div className="mt-1">
+                              <div>{starsText(row.avg)} avg</div>
+                              <div>{row.votes} rated</div>
+                            </div>
                           </div>
                         </>
                       );

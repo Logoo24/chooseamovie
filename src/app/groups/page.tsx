@@ -30,7 +30,7 @@ function GroupList({ title, groups }: { title: string; groups: GroupCard[] }) {
             <a
               key={`${group.role}:${group.id}`}
               href={`/g/${group.id}`}
-              className="block rounded-xl border border-white/12 bg-black/28 p-3 transition duration-200 hover:-translate-y-0.5 hover:border-white/22 hover:bg-black/35"
+              className="block rounded-xl border border-white/12 bg-black/28 p-3 transition duration-200 hover:border-white/22 hover:bg-black/35"
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="min-w-0">

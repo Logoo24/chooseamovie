@@ -75,12 +75,14 @@ function aggregateFromRecords(
 
   const rows: AggregatedRow[] = Object.entries(totals).map(([titleId, t]) => ({
     titleId,
+    totalStars: t.sum,
     avg: t.votes ? t.sum / t.votes : 0,
     votes: t.votes,
     skips: t.skips,
   }));
 
   rows.sort((a, b) => {
+    if (b.totalStars !== a.totalStars) return b.totalStars - a.totalStars;
     if (b.avg !== a.avg) return b.avg - a.avg;
     if (b.votes !== a.votes) return b.votes - a.votes;
     return a.titleId.localeCompare(b.titleId);

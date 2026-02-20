@@ -18,6 +18,12 @@ import { getGroupRatings } from "@/lib/ratingStore";
 import { type Member } from "@/lib/ratings";
 
 const TOP_LIMIT_OPTIONS = [10, 20, 50, 100] as const;
+type TopSortBy = "total_stars" | "average" | "most_rated";
+const TOP_SORT_OPTIONS: Array<{ value: TopSortBy; label: string }> = [
+  { value: "total_stars", label: "Total stars" },
+  { value: "average", label: "Average rating" },
+  { value: "most_rated", label: "Most ratings" },
+];
 
 function starsText(avg: number) {
   if (!avg) return "-";
@@ -150,11 +156,13 @@ function ResultCard({
   row,
   resolved,
   rank,
+  topSortBy,
   showMediaTypePill,
 }: {
   row: GroupTopTitle;
   resolved: ResolvedTitle;
   rank: number;
+  topSortBy: TopSortBy;
   showMediaTypePill: boolean;
 }) {
   const posterUrl = resolved.posterPath
@@ -164,7 +172,7 @@ function ResultCard({
   return (
     <div className="rounded-xl border border-white/12 bg-black/28 p-3 transition duration-200 hover:border-white/20 hover:bg-black/34">
       <div className="flex items-start gap-3">
-        <div className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/20 bg-white/5 text-xs font-semibold text-white/90">
+        <div className="mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/25 bg-white/8 text-base font-bold text-white">
           {rank}
         </div>
         <PosterImage src={posterUrl} alt={resolved.title} className="w-14 shrink-0" />
@@ -186,11 +194,41 @@ function ResultCard({
             <span>{resolved.year ?? (resolved.isResolved ? "Unknown year" : "Loading year...")}</span>
             {showMediaTypePill ? <Pill>{resolved.mediaType === "movie" ? "Movie" : "Show"}</Pill> : null}
           </div>
-          <div className="mt-2 flex items-center gap-2 text-white/95">
-            <StarDisplay value={row.avg} size="lg" />
-            <span className="text-lg font-bold">{starsText(row.avg)}</span>
+          {topSortBy === "average" ? (
+            <div className="mt-2 flex items-center gap-2 text-white/95">
+              <StarDisplay value={row.avg} size="lg" />
+              <span className="text-lg font-bold">{starsText(row.avg)}</span>
+            </div>
+          ) : topSortBy === "most_rated" ? (
+            <div className="mt-2 inline-flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-2.5 py-1">
+              <span className="text-2xl font-bold leading-none text-white">{row.votes}</span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-white/80">rated</span>
+            </div>
+          ) : (
+            <div className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-[rgb(var(--yellow))]/35 bg-[rgb(var(--yellow))]/12 px-2.5 py-1">
+              <span className="text-2xl font-bold leading-none text-white">{row.totalStars}</span>
+              <span className="text-xl leading-none text-[rgb(var(--yellow))]">{"\u2605"}</span>
+            </div>
+          )}
+
+          <div className="mt-2 text-xs text-white/72">
+            {topSortBy === "average" ? (
+              <>
+                <div>{row.totalStars} total stars</div>
+                <div>{row.votes} ratings</div>
+              </>
+            ) : topSortBy === "most_rated" ? (
+              <>
+                <div>{row.totalStars} total stars</div>
+                <div>Average {starsText(row.avg)} stars</div>
+              </>
+            ) : (
+              <>
+                <div>Average {starsText(row.avg)} stars</div>
+                <div>{row.votes} ratings</div>
+              </>
+            )}
           </div>
-          <div className="mt-1 text-xs text-white/65">{row.votes} rated</div>
         </div>
       </div>
     </div>
@@ -215,6 +253,7 @@ export default function ResultsPage() {
   const [titleCache, setTitleCache] = useState<Record<string, TitleSnapshot>>({});
   const [perMemberRatings, setPerMemberRatings] = useState<Record<string, Record<string, number>>>({});
   const [topLimit, setTopLimit] = useState<(typeof TOP_LIMIT_OPTIONS)[number]>(10);
+  const [topSortBy, setTopSortBy] = useState<TopSortBy>("total_stars");
   const [showMemberRankings, setShowMemberRankings] = useState(false);
   const updatingTimerRef = useRef<number | null>(null);
   const hideTimerRef = useRef<number | null>(null);
@@ -321,6 +360,7 @@ export default function ResultsPage() {
 
   useEffect(() => {
     setTopLimit(10);
+    setTopSortBy("total_stars");
     setShowMemberRankings(false);
     setShortlistFallback({});
     setTitleCache({});
@@ -380,12 +420,38 @@ export default function ResultsPage() {
   }, [topRows, memberRatedTitleIds]);
 
   const allRanked = useMemo(() => {
-    return topRows.filter((row) => row.votes > 0);
-  }, [topRows, memberRatedTitleIds]);
+    const rows = topRows.filter((row) => row.votes > 0);
+    rows.sort((a, b) => {
+      if (topSortBy === "average") {
+        if (b.avg !== a.avg) return b.avg - a.avg;
+        if (b.totalStars !== a.totalStars) return b.totalStars - a.totalStars;
+        if (b.votes !== a.votes) return b.votes - a.votes;
+        return a.titleId.localeCompare(b.titleId);
+      }
+      if (topSortBy === "most_rated") {
+        if (b.votes !== a.votes) return b.votes - a.votes;
+        if (b.totalStars !== a.totalStars) return b.totalStars - a.totalStars;
+        if (b.avg !== a.avg) return b.avg - a.avg;
+        return a.titleId.localeCompare(b.titleId);
+      }
+      if (b.totalStars !== a.totalStars) return b.totalStars - a.totalStars;
+      if (b.avg !== a.avg) return b.avg - a.avg;
+      if (b.votes !== a.votes) return b.votes - a.votes;
+      return a.titleId.localeCompare(b.titleId);
+    });
+    return rows;
+  }, [topRows, topSortBy]);
 
   const top = useMemo(() => {
     return allRanked.slice(0, topLimit);
   }, [allRanked, topLimit]);
+
+  const topSortSummary =
+    topSortBy === "average"
+      ? "Sorted by average rating. Ties are broken by total stars."
+      : topSortBy === "most_rated"
+        ? "Sorted by number of ratings. Ties are broken by total stars."
+        : "Sorted by total stars. Ties are broken by average rating.";
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "development") return;
@@ -524,9 +590,46 @@ export default function ResultsPage() {
         <Card>
           <CardTitle>Top picks</CardTitle>
           <div className="mt-2">
-            <Muted>Average excludes skips. Higher votes ranks above ties.</Muted>
+            <Muted>{topSortSummary} Skips are excluded.</Muted>
             {isUpdating ? <div className="mt-1 text-sm text-white/55">Updating...</div> : null}
           </div>
+
+          {allRanked.length > 0 ? (
+            <div className="mt-4 flex flex-wrap items-end justify-between gap-4">
+              <div className="space-y-2">
+                <div className="text-xs text-white/60">Top list size</div>
+                <div className="flex flex-wrap gap-2">
+                  {TOP_LIMIT_OPTIONS.map((limit) => (
+                    <Button
+                      key={limit}
+                      variant={topLimit === limit ? "primary" : "secondary"}
+                      onClick={() => setTopLimit(limit)}
+                    >
+                      Top {limit}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="w-full max-w-[220px] space-y-2">
+                <label htmlFor="top-sort-by" className="block text-xs text-white/60">
+                  Sort by
+                </label>
+                <select
+                  id="top-sort-by"
+                  value={topSortBy}
+                  onChange={(event) => setTopSortBy(event.target.value as TopSortBy)}
+                  className="w-full rounded-xl border border-white/14 bg-black/25 px-3.5 py-2.5 text-sm text-white outline-none transition focus:border-[rgb(var(--yellow))]/60 focus:ring-2 focus:ring-[rgb(var(--yellow))]/25"
+                >
+                  {TOP_SORT_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value} className="bg-[rgb(var(--card-2))] text-white">
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          ) : null}
 
           {isLoadingRows ? (
             <div className="mt-4 space-y-2">
@@ -553,29 +656,13 @@ export default function ResultsPage() {
                     row={item.row}
                     resolved={item.resolved}
                     rank={index + 1}
+                    topSortBy={topSortBy}
                     showMediaTypePill={showMediaTypePill}
                   />
                 ))}
               </div>
             )}
           </div>
-
-          {allRanked.length > 0 ? (
-            <div className="mt-4 space-y-2">
-              <div className="text-xs text-white/60">Top list size</div>
-              <div className="flex flex-wrap gap-2">
-                {TOP_LIMIT_OPTIONS.map((limit) => (
-                  <Button
-                    key={limit}
-                    variant={topLimit === limit ? "primary" : "secondary"}
-                    onClick={() => setTopLimit(limit)}
-                  >
-                    Top {limit}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          ) : null}
 
           <div className="mt-4">
             <Button variant="secondary" onClick={() => setShowMemberRankings((v) => !v)}>

@@ -16,7 +16,7 @@ export function Card({
       className={[
         "cam-soft-surface rounded-2xl p-4 sm:p-5",
         interactive
-          ? "transition duration-300 ease-out hover:-translate-y-[1px] hover:border-white/20"
+          ? "transition duration-300 ease-out hover:border-white/20"
           : "border-white/12",
         className,
       ].join(" ")}

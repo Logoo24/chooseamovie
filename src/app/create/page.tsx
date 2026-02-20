@@ -187,6 +187,7 @@ export default function CreateGroupPage() {
   const canGoStep2 = hostName.trim().length >= 2;
   const canGoStep3 = groupName.trim().length >= 2;
   const canCreate = isCustomListMode ? true : hasAtLeastOneAllowedRating;
+  const stepInsetClass = step === 0 ? "sm:pr-2" : step === 1 ? "sm:px-2" : "sm:pl-2";
 
   function onCardKeyDown(event: KeyboardEvent<HTMLDivElement>, onActivate: () => void) {
     if (event.key === "Enter" || event.key === " ") {
@@ -565,24 +566,30 @@ export default function CreateGroupPage() {
 
                       <Card interactive={false}>
                         <CardTitle>Allowed movie ratings</CardTitle>
-                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                          {movieRatingOptions.map((opt) => (
-                            <label
-                              key={opt.key}
-                              className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 hover:bg-white/10"
-                            >
-                              <div>
+                        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          {movieRatingOptions.map((opt) => {
+                            const checked = settings[opt.key];
+                            return (
+                              <label
+                                key={opt.key}
+                                className={[
+                                  "relative flex min-h-[64px] cursor-pointer flex-col justify-center rounded-xl border px-2 py-2 text-center transition",
+                                  checked
+                                    ? "border-[rgb(var(--yellow))]/55 bg-white/12"
+                                    : "border-white/10 bg-white/5 hover:bg-white/10",
+                                ].join(" ")}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => setSettings((s) => ({ ...s, [opt.key]: e.target.checked }))}
+                                  className="absolute right-2 top-2 h-4 w-4 accent-[rgb(var(--yellow))]"
+                                />
                                 <div className="text-sm font-semibold">{opt.label}</div>
-                                <div className="text-sm text-white/60">{opt.desc}</div>
-                              </div>
-                              <input
-                                type="checkbox"
-                                checked={settings[opt.key]}
-                                onChange={(e) => setSettings((s) => ({ ...s, [opt.key]: e.target.checked }))}
-                                className="h-5 w-5 accent-[rgb(var(--yellow))]"
-                              />
-                            </label>
-                          ))}
+                                <div className="mt-1 text-[11px] leading-tight text-white/60">{opt.desc}</div>
+                              </label>
+                            );
+                          })}
                         </div>
                       </Card>
 
@@ -592,24 +599,30 @@ export default function CreateGroupPage() {
                           <div className="mt-2 text-sm text-white/70">
                             Used for TV title filtering when Movies + TV is selected.
                           </div>
-                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                            {tvRatingOptions.map((opt) => (
-                              <label
+                          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                            {tvRatingOptions.map((opt) => {
+                              const checked = settings[opt.key];
+                              return (
+                                <label
                                 key={opt.key}
-                                className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 hover:bg-white/10"
-                              >
-                                <div>
+                                className={[
+                                    "relative flex min-h-[64px] cursor-pointer flex-col justify-center rounded-xl border px-2 py-2 text-center transition",
+                                    checked
+                                      ? "border-[rgb(var(--yellow))]/55 bg-white/12"
+                                      : "border-white/10 bg-white/5 hover:bg-white/10",
+                                  ].join(" ")}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={(e) => setSettings((s) => ({ ...s, [opt.key]: e.target.checked }))}
+                                    className="absolute right-2 top-2 h-4 w-4 accent-[rgb(var(--yellow))]"
+                                  />
                                   <div className="text-sm font-semibold">{opt.label}</div>
-                                  <div className="text-sm text-white/60">{opt.desc}</div>
-                                </div>
-                                <input
-                                  type="checkbox"
-                                  checked={settings[opt.key]}
-                                  onChange={(e) => setSettings((s) => ({ ...s, [opt.key]: e.target.checked }))}
-                                  className="h-5 w-5 accent-[rgb(var(--yellow))]"
-                                />
-                              </label>
-                            ))}
+                                  <div className="mt-1 text-[11px] leading-tight text-white/60">{opt.desc}</div>
+                                </label>
+                              );
+                            })}
                           </div>
                         </Card>
                       ) : null}
@@ -705,31 +718,33 @@ export default function CreateGroupPage() {
           </div>
         </div>
 
-        <Card interactive={false}>
-          <CardTitle>Navigation</CardTitle>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button
-              variant="ghost"
-              onClick={() => setStep((s) => (s === 0 ? 0 : ((s - 1) as Step)))}
-              disabled={step === 0 || isCreating}
-            >
-              Back
-            </Button>
-
-            {step < 2 ? (
+        <div className={stepInsetClass}>
+          <Card interactive={false}>
+            <CardTitle>Navigation</CardTitle>
+            <div className="mt-4 flex flex-wrap gap-2">
               <Button
-                onClick={goToNextStep}
-                disabled={(step === 0 && !canGoStep2) || (step === 1 && !canGoStep3) || isCreating}
+                variant="ghost"
+                onClick={() => setStep((s) => (s === 0 ? 0 : ((s - 1) as Step)))}
+                disabled={step === 0 || isCreating}
               >
-                Next
+                Back
               </Button>
-            ) : (
-              <Button onClick={onCreate} disabled={!canCreate || isCreating}>
-                {isCreating ? "Creating..." : "Create group"}
-              </Button>
-            )}
-          </div>
-        </Card>
+
+              {step < 2 ? (
+                <Button
+                  onClick={goToNextStep}
+                  disabled={(step === 0 && !canGoStep2) || (step === 1 && !canGoStep3) || isCreating}
+                >
+                  Next
+                </Button>
+              ) : (
+                <Button onClick={onCreate} disabled={!canCreate || isCreating}>
+                  {isCreating ? "Creating..." : "Create group"}
+                </Button>
+              )}
+            </div>
+          </Card>
+        </div>
       </div>
     </AppShell>
   );

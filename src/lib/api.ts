@@ -60,6 +60,7 @@ export type RatingRow = {
 export type GroupTopTitleRow = {
   group_id: string;
   title_id: string;
+  total_stars?: number | string | null;
   avg_rating: number | string;
   rating_count: number;
   updated_at: string;
@@ -123,6 +124,12 @@ function logCreateGroupSanityOnce(
 
 function normalizeStatus(status: number | null | undefined): number | null {
   return typeof status === "number" ? status : null;
+}
+
+function isMissingTotalStarsColumnError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.code ?? ""} ${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return text.includes("total_stars") && text.includes("column");
 }
 
 async function runDbCall<T>(
@@ -589,9 +596,31 @@ export async function listRatingsForMember(
 }
 
 export async function getTopTitles(groupId: string): Promise<DbResult<GroupTopTitleRow[]>> {
-  return runDbCall<GroupTopTitleRow[]>(
+  const preferred = await runDbCall<GroupTopTitleRow[]>(
     {
       operation: "getTopTitles",
+      table: "group_top_titles",
+      payload: { groupId },
+    },
+    () =>
+      supabase!
+        .from("group_top_titles")
+        .select("group_id, title_id, total_stars, avg_rating, rating_count, updated_at")
+        .eq("group_id", groupId)
+        .order("total_stars", { ascending: false })
+        .order("avg_rating", { ascending: false })
+        .order("rating_count", { ascending: false })
+        .order("updated_at", { ascending: false })
+        .limit(MAX_TOP_TITLES_LIMIT)
+  );
+
+  if (!preferred.error || !isMissingTotalStarsColumnError(preferred.error)) {
+    return preferred;
+  }
+
+  return runDbCall<GroupTopTitleRow[]>(
+    {
+      operation: "getTopTitlesLegacy",
       table: "group_top_titles",
       payload: { groupId },
     },

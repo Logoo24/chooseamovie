@@ -20,10 +20,14 @@ body {
 }
 
 body {
-  background:
+  background-color: rgb(var(--bg));
+  background-image:
     radial-gradient(1200px 700px at 10% -10%, rgba(229, 9, 20, 0.18), transparent 64%),
     radial-gradient(1000px 650px at 90% -20%, rgba(255, 204, 51, 0.12), transparent 62%),
     linear-gradient(180deg, rgb(8 8 11), rgb(var(--bg)));
+  background-repeat: no-repeat;
+  background-position: top center;
+  background-size: 100% 900px;
   color: rgb(var(--text));
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
