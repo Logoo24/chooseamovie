@@ -20,7 +20,13 @@ import { isHostForGroup } from "@/lib/hostStore";
 import { ensureMember } from "@/lib/memberStore";
 import { setRating as setRatingValue } from "@/lib/ratingStore";
 import { ensureAuth } from "@/lib/api";
-import { upsertTitleSnapshot } from "@/lib/titleCacheStore";
+import {
+  getTitleSnapshots,
+  upsertTitleSnapshot,
+  type TitleSnapshot,
+} from "@/lib/titleCacheStore";
+import { parseTmdbTitleKey } from "@/lib/tmdbTitleKey";
+import { getShortlist, type ShortlistItem } from "@/lib/shortlistStore";
 import { loadGroup, type Group } from "@/lib/storage";
 import {
   getActiveMember,
@@ -71,13 +77,41 @@ type DetailsResponse = {
 
 const ENDLESS_PREFETCH_THRESHOLD = 12;
 
-function makeCustomListTitles(items: string[], genreLabel: string): RateTitle[] {
-  return items.map((name, idx) => ({
-    id: `sl:${idx}:${name.toLowerCase().replace(/\s+/g, "-").slice(0, 40)}`,
-    name,
-    type: "movie",
-    genre: genreLabel,
-  }));
+function buildLegacyShortlistTitleId(name: string, idx: number) {
+  return `sl:${idx}:${name.toLowerCase().replace(/\s+/g, "-").slice(0, 40)}`;
+}
+
+function makeCustomListTitles(
+  items: string[],
+  genreLabel: string,
+  shortlist: ShortlistItem[] = [],
+  titleSnapshotsByShortlistId: Record<string, TitleSnapshot> = {}
+): RateTitle[] {
+  const sourceItems = items.length > 0 ? items : shortlist.map((item) => item.title_snapshot.title);
+
+  return sourceItems.map((name, idx) => {
+    const shortlistItem = shortlist[idx];
+    const parsed = shortlistItem ? parseTmdbTitleKey(shortlistItem.title_id) : null;
+    const titleSnapshot = shortlistItem
+      ? titleSnapshotsByShortlistId[shortlistItem.title_id] ?? null
+      : null;
+    const mediaType = titleSnapshot?.media_type ?? shortlistItem?.title_snapshot.media_type ?? "movie";
+    const title = titleSnapshot?.title?.trim() || shortlistItem?.title_snapshot.title || name;
+    const overview =
+      typeof titleSnapshot?.overview === "string" ? titleSnapshot.overview.trim() : "";
+
+    return {
+      id: buildLegacyShortlistTitleId(name, idx),
+      name: title,
+      type: mediaType,
+      tmdbType: parsed?.type,
+      tmdbId: parsed?.id,
+      year: titleSnapshot?.year ?? shortlistItem?.title_snapshot.year ?? undefined,
+      genre: genreLabel,
+      posterPath: titleSnapshot?.poster_path ?? shortlistItem?.title_snapshot.poster_path ?? null,
+      description: overview || undefined,
+    };
+  });
 }
 
 function mapQueueToRateTitle(item: EndlessQueueItem): RateTitle {
@@ -214,9 +248,26 @@ export default function RatePage() {
       const ratings = loadRatings(groupId, member.id);
 
       if (group.settings.ratingMode === "shortlist") {
+        const shortlist = await getShortlist(groupId);
+        if (!alive) return;
+
+        let titleSnapshotsByShortlistId: Record<string, TitleSnapshot> = {};
+        if (shortlist.length > 0) {
+          try {
+            titleSnapshotsByShortlistId = await getTitleSnapshots(
+              shortlist.map((item) => item.title_id)
+            );
+          } catch {
+            titleSnapshotsByShortlistId = {};
+          }
+          if (!alive) return;
+        }
+
         const catalog = makeCustomListTitles(
           group.settings.shortlistItems || [],
-          customListLabel(group.settings.contentType)
+          customListLabel(group.settings.contentType),
+          shortlist,
+          titleSnapshotsByShortlistId
         );
         const unrated = catalog.filter((t) => ratings[t.id] === undefined);
         if (!alive) return;

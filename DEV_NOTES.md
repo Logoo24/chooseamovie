@@ -97,6 +97,8 @@ create unique index if not exists ratings_group_member_title_uidx
 - Tailwind config warning appears in build logs due to module type settings.
 
 ## Recent commits log
+### 2026-02-19 - New ranking system, UI refresh (`442117f`)
+- Update summary pending.
 ### 2026-02-18 - Release 1.0 (`71d8b7a`)
 - Update summary pending.
 ### 2026-02-18 - WIP: polish + ratings/results fixes (`0dbdd6a`)
