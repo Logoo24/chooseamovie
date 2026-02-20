@@ -27,12 +27,26 @@ import { TITLES } from "@/lib/titles";
 import { type Group } from "@/lib/storage";
 
 function ratingLabel(group: Group) {
-  const allowed: string[] = [];
-  if (group.settings.allowG) allowed.push("G");
-  if (group.settings.allowPG) allowed.push("PG");
-  if (group.settings.allowPG13) allowed.push("PG-13");
-  if (group.settings.allowR) allowed.push("R");
-  return allowed.join(", ");
+  const allowedMovieRatings: string[] = [];
+  if (group.settings.allowG) allowedMovieRatings.push("G");
+  if (group.settings.allowPG) allowedMovieRatings.push("PG");
+  if (group.settings.allowPG13) allowedMovieRatings.push("PG-13");
+  if (group.settings.allowR) allowedMovieRatings.push("R");
+
+  const movieLabel = `Movies: ${allowedMovieRatings.length > 0 ? allowedMovieRatings.join(", ") : "None"}`;
+  if (group.settings.contentType !== "movies_and_shows") {
+    return movieLabel;
+  }
+
+  const allowedTvRatings: string[] = [];
+  if (group.settings.allowTVY) allowedTvRatings.push("TV-Y");
+  if (group.settings.allowTVY7) allowedTvRatings.push("TV-Y7");
+  if (group.settings.allowTVG) allowedTvRatings.push("TV-G");
+  if (group.settings.allowTVPG) allowedTvRatings.push("TV-PG");
+  if (group.settings.allowTV14) allowedTvRatings.push("TV-14");
+  if (group.settings.allowTVMA) allowedTvRatings.push("TV-MA");
+
+  return `${movieLabel} | TV: ${allowedTvRatings.length > 0 ? allowedTvRatings.join(", ") : "None"}`;
 }
 
 function releaseYearRangeLabel(group: Group) {
@@ -475,11 +489,11 @@ export default function GroupHubPage() {
 
           <div className="mt-4 space-y-3">
             {shouldHideInviteLink ? (
-              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3 text-sm text-white/75">
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3 text-sm text-white/75">
                 Only hosts can share invites in this group.
               </div>
             ) : (
-              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3 text-sm text-white/90 break-all">
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3 text-sm text-white/90 break-all">
                 {inviteLink}
               </div>
             )}
@@ -512,7 +526,7 @@ export default function GroupHubPage() {
             )}
 
             {!isHost && !activeMember ? (
-              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3">
                 <div className="text-sm font-semibold text-white">Join to participate</div>
                 <div className="mt-1 text-sm text-white/65">Enter your display name to join from this link.</div>
                 {joinError !== "none" ? (
@@ -552,21 +566,21 @@ export default function GroupHubPage() {
           <Card>
             <CardTitle>Group setup summary</CardTitle>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3">
                 <div className="text-sm font-semibold">Mode</div>
                 <div className="mt-1 text-sm text-white/70">{modeLabel}</div>
               </div>
-              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3">
                 <div className="text-sm font-semibold">Content type</div>
                 <div className="mt-1 text-sm text-white/70">{contentLabel}</div>
               </div>
-              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3 sm:col-span-2">
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3 sm:col-span-2">
                 <div className="text-sm font-semibold">Allowed ratings</div>
                 <div className="mt-1 text-sm text-white/70">
                   {group.settings.ratingMode === "unlimited" ? ratingLabel(group) : "Custom list mode"}
                 </div>
               </div>
-              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3 sm:col-span-2">
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3 sm:col-span-2">
                 <div className="text-sm font-semibold">Release year range</div>
                 <div className="mt-1 text-sm text-white/70">{releaseYearRangeLabel(group)}</div>
               </div>
@@ -582,7 +596,7 @@ export default function GroupHubPage() {
                 members.map((member) => (
                   <div
                     key={member.id}
-                    className="flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3"
+                    className="flex items-center justify-between gap-2 rounded-xl border border-white/12 bg-black/28 p-3 transition duration-200 hover:border-white/20 hover:bg-black/34"
                   >
                     <div className="text-sm text-white">
                       {member.name}
@@ -628,11 +642,11 @@ export default function GroupHubPage() {
           <Card>
             <CardTitle>Stats</CardTitle>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3">
                 <div className="text-sm font-semibold">Total ratings</div>
                 <div className="mt-1 text-sm text-white/70">{totalRatings}</div>
               </div>
-              <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
+              <div className="rounded-xl border border-white/12 bg-black/28 p-3">
                 <div className="text-sm font-semibold">Members</div>
                 <div className="mt-1 text-sm text-white/70">{members.length}</div>
               </div>
@@ -648,7 +662,7 @@ export default function GroupHubPage() {
                 topThree.map((row, index) => (
                   <div
                     key={row.titleId}
-                    className="flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3"
+                    className="flex items-center justify-between gap-2 rounded-xl border border-white/12 bg-black/28 p-3 transition duration-200 hover:border-white/20 hover:bg-black/34"
                   >
                     {(() => {
                       const resolved = resolvePreviewTitle(group, row.titleId, titleCache, shortlistFallback);

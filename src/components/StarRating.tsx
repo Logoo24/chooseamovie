@@ -12,6 +12,18 @@ type StarRatingProps = {
 
 const LABELS = ["Skip", "Low", "Maybe", "Good", "Love"];
 
+function Star({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={["h-7 w-7", filled ? "fill-current" : "fill-none stroke-current stroke-1.5"].join(" ")}
+      aria-hidden="true"
+    >
+      <path d="m12 3 2.7 5.46 6.03.88-4.36 4.24 1.03 6-5.4-2.84-5.4 2.84 1.03-6L3.27 9.34l6.03-.88L12 3Z" />
+    </svg>
+  );
+}
+
 export function StarRating({
   value,
   onChange,
@@ -20,7 +32,7 @@ export function StarRating({
   showNumericHint = true,
 }: StarRatingProps) {
   const [hoverValue, setHoverValue] = useState<number | null>(null);
-  const [popAt, setPopAt] = useState<number | null>(null);
+  const [popTo, setPopTo] = useState<number | null>(null);
   const [canHover, setCanHover] = useState(false);
 
   const activeValue = hoverValue ?? value;
@@ -44,8 +56,8 @@ export function StarRating({
     if (disabled) return;
     setHoverValue(null);
     onChange(v);
-    setPopAt(v);
-    window.setTimeout(() => setPopAt(null), 170);
+    setPopTo(v);
+    window.setTimeout(() => setPopTo(null), 240);
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
@@ -54,14 +66,12 @@ export function StarRating({
     const current = value > 0 ? value : 1;
     if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
       event.preventDefault();
-      const next = Math.max(1, current - 1) as 1 | 2 | 3 | 4 | 5;
-      choose(next);
+      choose(Math.max(1, current - 1) as 1 | 2 | 3 | 4 | 5);
       return;
     }
     if (event.key === "ArrowRight" || event.key === "ArrowUp") {
       event.preventDefault();
-      const next = Math.min(5, current + 1) as 1 | 2 | 3 | 4 | 5;
-      choose(next);
+      choose(Math.min(5, current + 1) as 1 | 2 | 3 | 4 | 5);
       return;
     }
     if (event.key === "Home") {
@@ -96,7 +106,7 @@ export function StarRating({
       >
         {[1, 2, 3, 4, 5].map((n) => {
           const isActive = n <= activeValue;
-          const isPopping = n === popAt;
+          const isPopping = popTo !== null && n <= popTo;
 
           return (
             <button
@@ -116,23 +126,17 @@ export function StarRating({
               onBlur={() => setHoverValue(null)}
               onClick={() => choose(n as 1 | 2 | 3 | 4 | 5)}
               className={[
-                "group relative flex h-14 w-14 items-center justify-center rounded-full border transition",
+                "group relative flex h-14 w-14 items-center justify-center rounded-full border transition-[background-color,border-color,box-shadow,transform,opacity] duration-220",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--yellow))]/30",
                 disabled ? "opacity-60" : "",
                 isActive
                   ? "border-[rgb(var(--yellow))]/60 bg-[rgb(var(--yellow))]/20 shadow-[0_0_18px_rgba(255,204,51,0.26)]"
                   : "border-white/15 bg-white/5 hover:bg-white/10",
-                isPopping ? "scale-110" : "scale-100",
+                isPopping ? "cam-star-pop" : "",
               ].join(" ")}
             >
-              <span
-                className={[
-                  "text-3xl leading-none transition-all duration-150 select-none",
-                  isActive ? "text-[rgb(var(--yellow))]" : "text-white/45",
-                  isPopping ? "scale-110" : "scale-100",
-                ].join(" ")}
-              >
-                ★
+              <span className={isActive ? "text-[rgb(var(--yellow))]" : "text-white/45"}>
+                <Star filled={isActive} />
               </span>
             </button>
           );
@@ -147,9 +151,7 @@ export function StarRating({
         </div>
       ) : null}
 
-      {numericHint ? (
-        <div className="text-center text-xs text-white/60">{numericHint}</div>
-      ) : null}
+      {numericHint ? <div className="text-center text-xs text-white/60">{numericHint}</div> : null}
     </div>
   );
 }

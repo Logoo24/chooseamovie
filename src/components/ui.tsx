@@ -2,20 +2,36 @@
 
 import React from "react";
 
-export function Card({ children }: { children: React.ReactNode }) {
+export function Card({
+  children,
+  className = "",
+  interactive = true,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  interactive?: boolean;
+}) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-sm">
+    <div
+      className={[
+        "cam-soft-surface rounded-2xl p-4 sm:p-5",
+        interactive
+          ? "transition duration-300 ease-out hover:-translate-y-[1px] hover:border-white/20"
+          : "border-white/12",
+        className,
+      ].join(" ")}
+    >
       {children}
     </div>
   );
 }
 
 export function CardTitle({ children }: { children: React.ReactNode }) {
-  return <div className="text-sm font-semibold text-white">{children}</div>;
+  return <div className="text-sm font-semibold tracking-tight text-white">{children}</div>;
 }
 
 export function Muted({ children }: { children: React.ReactNode }) {
-  return <div className="text-sm text-white/65">{children}</div>;
+  return <div className="text-sm leading-relaxed text-white/68">{children}</div>;
 }
 
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
@@ -23,9 +39,9 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       className={[
-        "w-full rounded-xl border border-white/10 bg-[rgb(var(--card))] px-3 py-2",
-        "text-white placeholder:text-white/40 outline-none",
-        "focus:border-[rgb(var(--yellow))]/60 focus:ring-2 focus:ring-[rgb(var(--yellow))]/20",
+        "w-full rounded-xl border border-white/14 bg-black/25 px-3.5 py-2.5",
+        "text-white placeholder:text-white/40 outline-none transition",
+        "focus:border-[rgb(var(--yellow))]/60 focus:ring-2 focus:ring-[rgb(var(--yellow))]/25",
         props.className ?? "",
       ].join(" ")}
     />
@@ -40,13 +56,13 @@ export function Button({
   variant?: "primary" | "secondary" | "ghost";
 }) {
   const base =
-    "inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold transition active:translate-y-[1px] disabled:opacity-50 disabled:active:translate-y-0";
+    "inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-semibold transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--yellow))]/35 active:translate-y-[1px] disabled:opacity-50 disabled:active:translate-y-0";
   const styles =
     variant === "primary"
-      ? "bg-[rgb(var(--red))] text-white hover:brightness-110"
+      ? "border border-[rgb(var(--red))]/45 bg-[linear-gradient(160deg,rgba(229,9,20,0.96),rgba(183,7,16,0.96))] text-white shadow-[0_10px_24px_rgba(229,9,20,0.25)] hover:-translate-y-0.5 hover:brightness-110 hover:shadow-[0_14px_28px_rgba(229,9,20,0.32)]"
       : variant === "secondary"
-        ? "bg-white/10 text-white hover:bg-white/15 border border-white/10"
-        : "bg-transparent text-white/80 hover:bg-white/5 border border-white/10";
+        ? "border border-white/16 bg-white/[0.06] text-white/95 hover:-translate-y-0.5 hover:bg-white/[0.12]"
+        : "border border-white/14 bg-transparent text-white/82 hover:bg-white/[0.06] hover:text-white";
 
   return (
     <button {...props} className={[base, styles, props.className ?? ""].join(" ")}>
@@ -57,7 +73,7 @@ export function Button({
 
 export function Pill({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2 py-1 text-xs text-white/70">
+    <span className="inline-flex items-center rounded-full border border-white/14 bg-white/[0.06] px-2.5 py-1 text-xs font-medium text-white/76">
       {children}
     </span>
   );

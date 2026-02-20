@@ -1,293 +1,211 @@
-"use client";
-
-import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AppShell } from "@/components/AppShell";
-import { Button, Card, CardTitle, Muted, Pill } from "@/components/ui";
-import { PopcornLogo } from "@/components/PopcornLogo";
-import { deleteGroup, getMyGroups, leaveGroup, type MyGroupSummary } from "@/lib/groupStore";
-import { isHostForGroup } from "@/lib/hostStore";
-import { getActiveMember } from "@/lib/ratings";
-import { listSavedGroups } from "@/lib/storage";
+import { LandingTitleCarouselCard } from "@/components/landing/LandingTitleCarouselCard";
+import { LandingHeader } from "@/components/landing/LandingHeader";
+import { Reveal } from "@/components/landing/Reveal";
 
-type GroupCard = {
-  id: string;
-  name: string;
-  createdAt: string;
-  isHost: boolean;
-};
+const featureBullets = [
+  "Endless discovery mode",
+  "Custom list nights",
+  "Group results with averages",
+  "Shareable join link",
+];
 
-type ConfirmState = {
-  groupId: string;
-  groupName: string;
-  action: "delete" | "leave";
-} | null;
+const howItWorksSteps = [
+  {
+    title: "Create a group",
+    description: "Start in seconds with endless mode or build a custom list for a specific movie night.",
+    Icon: GroupIcon,
+  },
+  {
+    title: "Set filters",
+    description: "Pick genres, release years, and provider preferences so everyone sees better options sooner.",
+    Icon: FilterIcon,
+  },
+  {
+    title: "Rate and decide",
+    description: "Everyone rates quickly, and the best picks rise to the top with clear group results.",
+    Icon: StarIcon,
+  },
+];
+
+const howItWorksBenefits = [
+  {
+    title: "No arguing.",
+    description: "Everyone gets equal input with the same simple rating flow.",
+  },
+  {
+    title: "No endless browsing.",
+    description: "Filters and ranking keep your group focused on strong options.",
+  },
+  {
+    title: "No group texts.",
+    description: "Share one join link and decide together in one place.",
+  },
+];
+
+const primaryCtaClass =
+  "inline-flex items-center justify-center rounded-xl border border-[rgb(var(--red))]/30 bg-[rgb(var(--red))] px-5 py-3 text-sm font-semibold text-white transition duration-200 hover:-translate-y-0.5 hover:brightness-110 hover:shadow-[0_10px_24px_rgba(229,9,20,0.3)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--yellow))]/40";
+const secondaryCtaClass =
+  "inline-flex items-center justify-center rounded-xl border border-white/20 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition duration-200 hover:-translate-y-0.5 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40";
 
 export default function Home() {
-  const [groups, setGroups] = useState<GroupCard[]>([]);
-  const [isLoadingGroups, setIsLoadingGroups] = useState(true);
-  const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
-  const [confirmState, setConfirmState] = useState<ConfirmState>(null);
-  const [isActing, setIsActing] = useState(false);
-  const [message, setMessage] = useState("");
-  const [messageTone, setMessageTone] = useState<"info" | "success" | "error">("info");
-
-  async function loadGroups() {
-    setIsLoadingGroups(true);
-    setMessage("");
-    setMessageTone("info");
-
-    const remote = await getMyGroups();
-    const byId = new Map<string, GroupCard>();
-
-    for (const group of remote.hosted) {
-      byId.set(group.id, {
-        id: group.id,
-        name: group.name,
-        createdAt: group.createdAt,
-        isHost: true,
-      });
-    }
-
-    for (const group of remote.joined) {
-      if (byId.has(group.id)) continue;
-      byId.set(group.id, {
-        id: group.id,
-        name: group.name,
-        createdAt: group.createdAt,
-        isHost: false,
-      });
-    }
-
-    const local = listSavedGroups();
-    for (const group of local) {
-      if (byId.has(group.id)) continue;
-
-      const host = isHostForGroup(group.id);
-      const joined = Boolean(getActiveMember(group.id));
-      if (!host && !joined) continue;
-
-      byId.set(group.id, {
-        id: group.id,
-        name: group.name,
-        createdAt: group.createdAt,
-        isHost: host,
-      });
-    }
-
-    const next = Array.from(byId.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    setGroups(next);
-
-    if (remote.error === "network") {
-      setMessage("Some groups may be missing while offline.");
-      setMessageTone("info");
-    } else if (remote.error === "forbidden") {
-      setMessage("Some groups are hidden due to access rules.");
-      setMessageTone("info");
-    }
-
-    setIsLoadingGroups(false);
-  }
-
-  useEffect(() => {
-    void loadGroups();
-  }, []);
-
-  const hasGroups = useMemo(() => groups.length > 0, [groups.length]);
-
-  async function onConfirmAction() {
-    if (!confirmState || isActing) return;
-    setIsActing(true);
-
-    try {
-      if (confirmState.action === "delete") {
-        const result = await deleteGroup(confirmState.groupId);
-        if (result.error !== "none") {
-          setConfirmState(null);
-          setMenuOpenFor(null);
-          setMessageTone("error");
-          setMessage(
-            result.error === "forbidden"
-              ? "You do not have permission to delete this group."
-              : "Could not delete the group right now. Please try again."
-          );
-          return;
-        }
-        setGroups((current) => current.filter((g) => g.id !== confirmState.groupId));
-        setMessageTone("success");
-        setMessage(`Deleted "${confirmState.groupName}".`);
-      } else {
-        const result = await leaveGroup(confirmState.groupId);
-        if (result.error !== "none") {
-          setConfirmState(null);
-          setMenuOpenFor(null);
-          setMessageTone("error");
-          setMessage(
-            result.error === "forbidden"
-              ? "You do not have permission to leave this group."
-              : "Could not leave the group right now. Please try again."
-          );
-          return;
-        }
-        setGroups((current) => current.filter((g) => g.id !== confirmState.groupId));
-        setMessageTone("success");
-        setMessage(`Left "${confirmState.groupName}".`);
-      }
-
-      setConfirmState(null);
-      setMenuOpenFor(null);
-    } finally {
-      setIsActing(false);
-    }
-  }
-
   return (
-    <AppShell>
-      <div className="space-y-6">
-        <Card>
-          <div className="flex items-start gap-4">
-            <div className="shrink-0">
-              <PopcornLogo className="h-14 w-14" />
-            </div>
+    <div className="min-h-screen bg-[rgb(var(--bg))] text-[rgb(var(--text))]">
+      <LandingHeader />
 
-            <div className="min-w-0 space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-2xl font-semibold tracking-tight">ChooseAMovie</h1>
-                <Pill>Movie night, solved</Pill>
-              </div>
+      <main>
+        <section className="relative overflow-hidden border-b border-white/10">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-[-200px] mx-auto h-[480px] w-[min(1100px,100%)] rounded-full bg-[radial-gradient(circle,rgba(229,9,20,0.24)_0%,rgba(229,9,20,0)_72%)] blur-3xl"
+          />
+          <div className="mx-auto max-w-6xl px-4 pb-16 pt-20 sm:px-6 sm:pb-20 sm:pt-24">
+            <Reveal className="mx-auto max-w-3xl text-center">
+              <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-6xl">
+                Pick a movie together in minutes.
+              </h1>
+              <p className="mx-auto mt-5 max-w-2xl text-base text-white/75 sm:text-lg">
+                Create a group, set filters, rate titles, and get a ranked list everyone agrees on.
+              </p>
 
-              <Muted>
-                Build a group in seconds, invite everyone, and quickly discover something everyone is actually excited to watch.
-              </Muted>
-
-              <div className="flex flex-wrap gap-2 pt-1">
-                <Link href="/create">
-                  <Button>Create group</Button>
+              <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+                <Link href="/create" className={primaryCtaClass}>
+                  Create a group
                 </Link>
-                <Button variant="secondary" disabled title="Open invite link in your browser">
-                  Open invite link
-                </Button>
+                <a href="#how-it-works" className={secondaryCtaClass}>
+                  See how it works
+                </a>
               </div>
-            </div>
+              <p className="mt-4 text-sm text-white/60">Works best with 2-8 people.</p>
+            </Reveal>
+
+            <Reveal className="mx-auto mt-10 max-w-3xl" delayMs={80}>
+              <LandingTitleCarouselCard />
+            </Reveal>
           </div>
-        </Card>
+        </section>
 
-        <Card>
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle>My groups</CardTitle>
-          </div>
+        <section id="how-it-works" className="scroll-mt-28">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20">
+            <Reveal className="max-w-2xl">
+              <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">How it works</h2>
+              <p className="mt-3 text-base text-white/70">It takes about a minute to get started.</p>
+            </Reveal>
 
-          {message ? (
-            <div
-              className={[
-                "mt-3 rounded-xl border p-3 text-sm",
-                messageTone === "error"
-                  ? "border-red-400/40 bg-red-500/10 text-red-100"
-                  : messageTone === "success"
-                    ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100"
-                    : "border-white/10 bg-white/5 text-white/70",
-              ].join(" ")}
-            >
-              {message}
-            </div>
-          ) : null}
-
-          {isLoadingGroups ? (
-            <div className="mt-4 space-y-2">
-              <div className="h-4 w-2/3 animate-pulse rounded bg-white/10" />
-              <div className="h-4 w-1/2 animate-pulse rounded bg-white/10" />
-            </div>
-          ) : !hasGroups ? (
-            <div className="mt-3">
-              <Muted>You have no groups yet. Create one to get started.</Muted>
-            </div>
-          ) : (
-            <div className="mt-3 space-y-2">
-              {groups.map((group) => (
-                <div
-                  key={group.id}
-                  className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <a href={`/g/${group.id}`} className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-white hover:underline">
-                        {group.name}
-                      </div>
-                      <div className="mt-1 flex items-center gap-2 text-xs text-white/60">
-                        <span>{new Date(group.createdAt).toLocaleDateString()}</span>
-                        <Pill>{group.isHost ? "Host" : "Joined"}</Pill>
-                      </div>
-                    </a>
-
-                    <div className="relative">
-                      <Button
-                        variant="ghost"
-                        aria-label="Group options"
-                        onClick={() => setMenuOpenFor((current) => (current === group.id ? null : group.id))}
-                      >
-                        ...
-                      </Button>
-
-                      {menuOpenFor === group.id ? (
-                        <div className="absolute right-0 z-20 mt-2 w-40 rounded-xl border border-white/10 bg-[rgb(var(--card-2))] p-1 shadow-lg">
-                          <button
-                            type="button"
-                            className="w-full rounded-lg px-3 py-2 text-left text-sm text-white hover:bg-white/10"
-                            onClick={() => {
-                              setConfirmState({
-                                groupId: group.id,
-                                groupName: group.name,
-                                action: group.isHost ? "delete" : "leave",
-                              });
-                            }}
-                          >
-                            {group.isHost ? "Delete group" : "Leave group"}
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
+            <div className="mt-8 grid gap-3 md:grid-cols-3">
+              {howItWorksBenefits.map((item, index) => (
+                <Reveal key={item.title} className="h-full" delayMs={index * 60}>
+                  <article className="how-gradient-sweep h-full rounded-2xl border border-white/12 p-4">
+                    <h3 className="text-base font-semibold text-white">{item.title}</h3>
+                    <p className="mt-2 text-sm text-white/72">{item.description}</p>
+                  </article>
+                </Reveal>
               ))}
             </div>
-          )}
-        </Card>
 
-        <div className="pt-1">
-          <Link href="/create">
-            <Button variant="secondary" className="w-full sm:w-auto">
-              Create new group
-            </Button>
-          </Link>
-        </div>
-      </div>
-
-      {confirmState ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center">
-          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[rgb(var(--card-2))] p-4 shadow-xl">
-            <div className="text-lg font-semibold text-white">
-              {confirmState.action === "delete" ? "Delete group?" : "Leave group?"}
-            </div>
-            <div className="mt-2 text-sm text-white/70">
-              {confirmState.action === "delete"
-                ? `This will remove ${confirmState.groupName} from your list and attempt to delete it for all members.`
-                : `You will leave ${confirmState.groupName} and it will be removed from your list.`}
-            </div>
-            <div className="mt-4 flex gap-2">
-              <Button variant="ghost" onClick={() => setConfirmState(null)} disabled={isActing}>
-                Cancel
-              </Button>
-              <Button onClick={onConfirmAction} disabled={isActing}>
-                {isActing
-                  ? "Working..."
-                  : confirmState.action === "delete"
-                    ? "Delete group"
-                    : "Leave group"}
-              </Button>
+            <div className="mt-10 grid gap-4 md:grid-cols-3">
+              {howItWorksSteps.map(({ title, description, Icon }, index) => (
+                <Reveal key={title} className="h-full" delayMs={index * 80}>
+                  <article className="how-gradient-sweep h-full rounded-2xl border border-white/12 p-5">
+                    <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-white">
+                      <Icon />
+                    </div>
+                    <h3 className="mt-4 text-lg font-semibold text-white">{title}</h3>
+                    <p className="mt-2 text-sm text-white/70">{description}</p>
+                  </article>
+                </Reveal>
+              ))}
             </div>
           </div>
+        </section>
+
+        <section className="border-y border-white/10 bg-white/[0.02]">
+          <div className="mx-auto grid max-w-6xl gap-10 px-4 py-16 sm:px-6 lg:grid-cols-[1fr_1.2fr] lg:items-center">
+            <Reveal>
+              <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Built for group movie nights</h2>
+              <ul className="mt-6 space-y-3">
+                {featureBullets.map((feature) => (
+                  <li key={feature} className="flex items-start gap-3 text-white/80">
+                    <span className="mt-1 inline-block h-2.5 w-2.5 rounded-full bg-[rgb(var(--yellow))]" />
+                    <span>{feature}</span>
+                  </li>
+                ))}
+              </ul>
+            </Reveal>
+
+            <Reveal delayMs={120}>
+              <LandingTitleCarouselCard stacked />
+            </Reveal>
+          </div>
+        </section>
+
+        <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20">
+          <Reveal>
+            <div className="cta-gradient-sweep rounded-3xl border border-white/15 p-8 text-center shadow-[0_20px_45px_rgba(0,0,0,0.35)] sm:p-12">
+              <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Ready to stop scrolling?</h2>
+              <div className="mt-6">
+                <Link href="/create" className={primaryCtaClass}>
+                  Create a group
+                </Link>
+              </div>
+              <p className="mt-4 text-sm text-white/65">Free to start.</p>
+            </div>
+          </Reveal>
+        </section>
+      </main>
+
+      <footer className="border-t border-white/10 bg-black/25">
+        <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 sm:px-6 sm:py-10">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-white/70">
+            <Link href="/about" className="transition hover:text-white">
+              About
+            </Link>
+            <Link href="/privacy" className="transition hover:text-white">
+              Privacy
+            </Link>
+            <Link href="/terms" className="transition hover:text-white">
+              Terms
+            </Link>
+            <a href="mailto:hello@chooseamovie.app" className="transition hover:text-white">
+              Contact
+            </a>
+            <Link href="/donate" className="text-xs text-white/60 transition hover:text-white">
+              Donate
+            </Link>
+          </div>
+          <p className="text-xs text-white/55">Movie data from TMDB.</p>
         </div>
-      ) : null}
-    </AppShell>
+      </footer>
+    </div>
+  );
+}
+
+function GroupIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+      <path
+        d="M16 11a3 3 0 1 0-2.82-4H9a3 3 0 1 0 0 2h4.18A3 3 0 0 0 16 11Zm-8 6a3 3 0 1 0-2.82-4H3v2h2.18A3 3 0 0 0 8 17Zm8 4a3 3 0 1 0-2.82-4H11v2h2.18A3 3 0 0 0 16 21Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function FilterIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+      <path d="M4 6h16v2l-6 6v4l-4 2v-6L4 8V6Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function StarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+      <path
+        d="m12 3 2.7 5.46 6.03.88-4.36 4.24 1.03 6-5.4-2.84-5.4 2.84 1.03-6L3.27 9.34l6.03-.88L12 3Z"
+        fill="currentColor"
+      />
+    </svg>
   );
 }

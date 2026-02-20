@@ -9,8 +9,6 @@ import {
   validateLanguage,
 } from "@/app/api/tmdb/_shared";
 
-type TitleType = "movie" | "tv";
-
 type TmdbGenre = {
   id: number;
   name: string;
@@ -38,6 +36,12 @@ type TmdbDetailsResponse = {
       }>;
     }>;
   };
+  content_ratings?: {
+    results?: Array<{
+      iso_3166_1?: string | null;
+      rating?: string | null;
+    }>;
+  };
 };
 
 function normalizeMpaa(certification: string | null | undefined) {
@@ -60,6 +64,37 @@ function extractUsMovieMpaa(
   return null;
 }
 
+function normalizeTvRating(rating: string | null | undefined) {
+  const raw = (rating ?? "").trim().toUpperCase();
+  if (!raw) return null;
+  if (raw === "TVY") return "TV-Y";
+  if (raw === "TVY7") return "TV-Y7";
+  if (raw === "TVG") return "TV-G";
+  if (raw === "TVPG") return "TV-PG";
+  if (raw === "TV14") return "TV-14";
+  if (raw === "TVMA") return "TV-MA";
+  if (
+    raw === "TV-Y" ||
+    raw === "TV-Y7" ||
+    raw === "TV-G" ||
+    raw === "TV-PG" ||
+    raw === "TV-14" ||
+    raw === "TV-MA"
+  ) {
+    return raw;
+  }
+  return null;
+}
+
+function extractUsTvRating(
+  contentRatings: TmdbDetailsResponse["content_ratings"]
+): string | null {
+  const regions = contentRatings?.results ?? [];
+  const us = regions.find((region) => region.iso_3166_1 === "US");
+  if (!us) return null;
+  return normalizeTvRating(us.rating);
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
 
@@ -78,7 +113,7 @@ export async function GET(request: NextRequest) {
       callSite: "details.GET",
       query: {
         language: language.value,
-        append_to_response: type.value === "movie" ? "release_dates" : undefined,
+        append_to_response: type.value === "movie" ? "release_dates" : "content_ratings",
       },
     });
   } catch (error) {
@@ -118,5 +153,6 @@ export async function GET(request: NextRequest) {
     poster_path: data.poster_path ?? null,
     backdrop_path: data.backdrop_path ?? null,
     first_air_date: data.first_air_date ?? null,
+    tv_rating: extractUsTvRating(data.content_ratings),
   });
 }

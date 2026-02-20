@@ -30,7 +30,7 @@ function GroupList({ title, groups }: { title: string; groups: GroupCard[] }) {
             <a
               key={`${group.role}:${group.id}`}
               href={`/g/${group.id}`}
-              className="block rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3 hover:bg-white/10"
+              className="block rounded-xl border border-white/12 bg-black/28 p-3 transition duration-200 hover:-translate-y-0.5 hover:border-white/22 hover:bg-black/35"
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -139,7 +139,7 @@ export default function GroupsPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">My groups</h1>
-            <div className="mt-1 text-sm text-white/60">Jump back into any group you host or joined.</div>
+            <div className="mt-1 text-sm text-white/66">Jump back into any group you host or joined.</div>
           </div>
           <a href="/create">
             <Button>Create new group</Button>

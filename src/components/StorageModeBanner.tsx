@@ -9,7 +9,7 @@ export function StorageModeBanner() {
   if (!isOffline && !hasSchemaMismatch) return null;
 
   return (
-    <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/65">
+    <div className="rounded-xl border border-white/12 bg-black/28 p-3 text-sm text-white/70 shadow-[0_8px_20px_rgba(0,0,0,0.24)]">
       {hasSchemaMismatch
         ? "Database schema mismatch: check groups columns."
         : "Offline mode: saving on this device only."}

@@ -62,6 +62,12 @@ export default function CreateGroupPage() {
     allowPG: true,
     allowPG13: true,
     allowR: true,
+    allowTVY: true,
+    allowTVY7: true,
+    allowTVG: true,
+    allowTVPG: true,
+    allowTV14: true,
+    allowTVMA: true,
     allow_members_invite_link: false,
     top_titles_limit: 100,
     ratingMode: "unlimited",
@@ -73,7 +79,7 @@ export default function CreateGroupPage() {
   const [isLoadingGenres, setIsLoadingGenres] = useState(false);
   const [genreLoadError, setGenreLoadError] = useState<string | null>(null);
 
-  const ratingOptions: Array<{
+  const movieRatingOptions: Array<{
     key: "allowG" | "allowPG" | "allowPG13" | "allowR";
     label: string;
     desc: string;
@@ -82,6 +88,19 @@ export default function CreateGroupPage() {
     { key: "allowPG", label: "PG", desc: "Parental guidance" },
     { key: "allowPG13", label: "PG-13", desc: "Teens and up" },
     { key: "allowR", label: "R", desc: "Restricted" },
+  ];
+
+  const tvRatingOptions: Array<{
+    key: "allowTVY" | "allowTVY7" | "allowTVG" | "allowTVPG" | "allowTV14" | "allowTVMA";
+    label: string;
+    desc: string;
+  }> = [
+    { key: "allowTVY", label: "TV-Y", desc: "All children" },
+    { key: "allowTVY7", label: "TV-Y7", desc: "Directed to older children" },
+    { key: "allowTVG", label: "TV-G", desc: "General audience" },
+    { key: "allowTVPG", label: "TV-PG", desc: "Parental guidance suggested" },
+    { key: "allowTV14", label: "TV-14", desc: "Parents strongly cautioned" },
+    { key: "allowTVMA", label: "TV-MA", desc: "Mature audience only" },
   ];
 
   useEffect(() => {
@@ -147,8 +166,19 @@ export default function CreateGroupPage() {
   }, []);
 
   const isCustomListMode = settings.ratingMode === "shortlist";
-  const atLeastOneRating =
+  const atLeastOneMovieRating =
     settings.allowG || settings.allowPG || settings.allowPG13 || settings.allowR;
+  const atLeastOneTvRating =
+    settings.allowTVY ||
+    settings.allowTVY7 ||
+    settings.allowTVG ||
+    settings.allowTVPG ||
+    settings.allowTV14 ||
+    settings.allowTVMA;
+  const requiresTvRatings = settings.contentType === "movies_and_shows";
+  const hasAtLeastOneAllowedRating = requiresTvRatings
+    ? atLeastOneMovieRating || atLeastOneTvRating
+    : atLeastOneMovieRating;
   const currentYear = new Date().getFullYear();
   const hasReleaseYearRange = Boolean(settings.endless.releaseFrom || settings.endless.releaseTo);
   const releaseFromYear = extractYear(settings.endless.releaseFrom) ?? String(DATE_RANGE_DEFAULT_FROM_YEAR);
@@ -156,7 +186,7 @@ export default function CreateGroupPage() {
 
   const canGoStep2 = hostName.trim().length >= 2;
   const canGoStep3 = groupName.trim().length >= 2;
-  const canCreate = isCustomListMode ? true : atLeastOneRating;
+  const canCreate = isCustomListMode ? true : hasAtLeastOneAllowedRating;
 
   function onCardKeyDown(event: KeyboardEvent<HTMLDivElement>, onActivate: () => void) {
     if (event.key === "Enter" || event.key === " ") {
@@ -237,7 +267,7 @@ export default function CreateGroupPage() {
             style={{ transform: `translateX(-${step * (100 / 3)}%)` }}
           >
             <div className="w-full pr-0 sm:pr-2">
-              <Card>
+              <Card interactive={false}>
                 <CardTitle>Your name</CardTitle>
                 <div className="mt-3 space-y-2">
                   <Input
@@ -263,7 +293,7 @@ export default function CreateGroupPage() {
             </div>
 
             <div className="w-full px-0 sm:px-2">
-              <Card>
+              <Card interactive={false}>
                 <CardTitle>Name your group</CardTitle>
                 <div className="mt-3 space-y-2">
                   <Input
@@ -290,7 +320,7 @@ export default function CreateGroupPage() {
             </div>
 
             <div className="w-full pl-0 sm:pl-2">
-              <Card>
+              <Card interactive={false}>
                 <CardTitle>Choose mode</CardTitle>
                 <div className="mt-3 space-y-3">
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -337,7 +367,7 @@ export default function CreateGroupPage() {
                     </div>
                   </div>
 
-                  <Card>
+                  <Card interactive={false}>
                     <CardTitle>Invite sharing</CardTitle>
                     <div className="mt-3 space-y-2">
                       <label className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 hover:bg-white/10">
@@ -364,7 +394,7 @@ export default function CreateGroupPage() {
 
                   {settings.ratingMode === "unlimited" ? (
                     <div className="space-y-3">
-                      <Card>
+                      <Card interactive={false}>
                         <CardTitle>Content</CardTitle>
                         <div className="mt-3 grid gap-2 sm:grid-cols-2">
                           <div
@@ -427,7 +457,7 @@ export default function CreateGroupPage() {
                         </div>
                       </Card>
 
-                      <Card>
+                      <Card interactive={false}>
                         <CardTitle>Release year range</CardTitle>
                         <div className="mt-3 space-y-3">
                           <label className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 hover:bg-white/10">
@@ -503,7 +533,7 @@ export default function CreateGroupPage() {
                         </div>
                       </Card>
 
-                      <Card>
+                      <Card interactive={false}>
                         <CardTitle>Filter out unpopular releases</CardTitle>
                         <div className="mt-3 space-y-3">
                           <label className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 hover:bg-white/10">
@@ -533,10 +563,10 @@ export default function CreateGroupPage() {
                         </div>
                       </Card>
 
-                      <Card>
-                        <CardTitle>Allowed ratings</CardTitle>
+                      <Card interactive={false}>
+                        <CardTitle>Allowed movie ratings</CardTitle>
                         <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                          {ratingOptions.map((opt) => (
+                          {movieRatingOptions.map((opt) => (
                             <label
                               key={opt.key}
                               className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 hover:bg-white/10"
@@ -554,15 +584,43 @@ export default function CreateGroupPage() {
                             </label>
                           ))}
                         </div>
-
-                        {!atLeastOneRating ? (
-                          <div className="mt-3 rounded-xl border border-[rgb(var(--red))]/40 bg-[rgb(var(--red))]/10 p-3 text-sm text-white">
-                            Select at least one rating option.
-                          </div>
-                        ) : null}
                       </Card>
 
-                      <Card>
+                      {settings.contentType === "movies_and_shows" ? (
+                        <Card interactive={false}>
+                          <CardTitle>Allowed TV ratings</CardTitle>
+                          <div className="mt-2 text-sm text-white/70">
+                            Used for TV title filtering when Movies + TV is selected.
+                          </div>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                            {tvRatingOptions.map((opt) => (
+                              <label
+                                key={opt.key}
+                                className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 hover:bg-white/10"
+                              >
+                                <div>
+                                  <div className="text-sm font-semibold">{opt.label}</div>
+                                  <div className="text-sm text-white/60">{opt.desc}</div>
+                                </div>
+                                <input
+                                  type="checkbox"
+                                  checked={settings[opt.key]}
+                                  onChange={(e) => setSettings((s) => ({ ...s, [opt.key]: e.target.checked }))}
+                                  className="h-5 w-5 accent-[rgb(var(--yellow))]"
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        </Card>
+                      ) : null}
+
+                      {!hasAtLeastOneAllowedRating ? (
+                        <div className="rounded-xl border border-[rgb(var(--red))]/40 bg-[rgb(var(--red))]/10 p-3 text-sm text-white">
+                          Select at least one allowed rating for your selected content type.
+                        </div>
+                      ) : null}
+
+                      <Card interactive={false}>
                         <CardTitle>Exclude genres</CardTitle>
                         <div className="mt-2 text-sm text-white/70">
                           All genres are included by default. Select genres below to exclude them.
@@ -629,7 +687,7 @@ export default function CreateGroupPage() {
                         </div>
                       </Card>
 
-                      <Card>
+                      <Card interactive={false}>
                         <CardTitle>Streaming services</CardTitle>
                         <div className="mt-2">
                           <Muted>Coming soon: filter by where your group can watch right now.</Muted>
@@ -647,7 +705,7 @@ export default function CreateGroupPage() {
           </div>
         </div>
 
-        <Card>
+        <Card interactive={false}>
           <CardTitle>Navigation</CardTitle>
           <div className="mt-4 flex flex-wrap gap-2">
             <Button

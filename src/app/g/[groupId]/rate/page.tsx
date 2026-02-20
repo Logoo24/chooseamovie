@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { GroupTabs } from "@/components/GroupTabs";
@@ -68,6 +68,8 @@ type DetailsResponse = {
     name: string;
   }>;
 };
+
+const ENDLESS_PREFETCH_THRESHOLD = 12;
 
 function makeCustomListTitles(items: string[], genreLabel: string): RateTitle[] {
   return items.map((name, idx) => ({
@@ -137,6 +139,24 @@ export default function RatePage() {
   const [isInTheaters, setIsInTheaters] = useState(false);
   const [mpaaRating, setMpaaRating] = useState<string | null>(null);
   const [titleGenres, setTitleGenres] = useState<string[]>([]);
+  const refillInFlightRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const currentGroupIdRef = useRef(groupId);
+  const currentMemberIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    currentGroupIdRef.current = groupId;
+  }, [groupId]);
+
+  useEffect(() => {
+    currentMemberIdRef.current = member?.id ?? null;
+  }, [member?.id]);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -207,19 +227,33 @@ export default function RatePage() {
         return;
       }
 
-      setIsRefreshingQueue(true);
-      const queue = await ensureEndlessQueue(groupId, member.id, group.settings);
+      const cachedQueue = getUpcomingQueue(groupId, member.id);
       if (!alive) return;
-      setIsRefreshingQueue(false);
-      setUnratedTitles(queue.map(mapQueueToRateTitle));
+      if (cachedQueue.length > 0) {
+        setUnratedTitles(cachedQueue.map(mapQueueToRateTitle));
+      }
       setCurrentIndex(0);
       setCurrentStars(0);
       setHistory([]);
+
+      refillInFlightRef.current = true;
+      setIsRefreshingQueue(true);
+      try {
+        const queue = await ensureEndlessQueue(groupId, member.id, group.settings);
+        if (!alive) return;
+        setUnratedTitles(queue.map(mapQueueToRateTitle));
+      } finally {
+        refillInFlightRef.current = false;
+        if (alive) {
+          setIsRefreshingQueue(false);
+        }
+      }
     };
 
     void refresh();
     return () => {
       alive = false;
+      refillInFlightRef.current = false;
       setIsRefreshingQueue(false);
     };
   }, [group, member, groupId]);
@@ -361,15 +395,38 @@ export default function RatePage() {
 
     if (!isCustomListMode) {
       consumeUpcomingTitle(groupId, member.id, currentTitleId);
-      let queue = getUpcomingQueue(groupId, member.id);
-      if (queue.length <= 2 && group) {
-        setIsRefreshingQueue(true);
-        queue = await ensureEndlessQueue(groupId, member.id, group.settings);
-        setIsRefreshingQueue(false);
-      }
+      const queue = getUpcomingQueue(groupId, member.id);
       setUnratedTitles(queue.map(mapQueueToRateTitle));
       setCurrentIndex(0);
       setCurrentStars(0);
+
+      if (queue.length <= ENDLESS_PREFETCH_THRESHOLD && group && !refillInFlightRef.current) {
+        const requestGroupId = groupId;
+        const requestMemberId = member.id;
+        refillInFlightRef.current = true;
+        setIsRefreshingQueue(true);
+
+        void ensureEndlessQueue(requestGroupId, requestMemberId, group.settings)
+          .then((refilled) => {
+            const stillCurrent =
+              isMountedRef.current &&
+              currentGroupIdRef.current === requestGroupId &&
+              currentMemberIdRef.current === requestMemberId;
+            if (!stillCurrent) return;
+            setUnratedTitles(refilled.map(mapQueueToRateTitle));
+            setCurrentIndex(0);
+          })
+          .finally(() => {
+            const stillCurrent =
+              isMountedRef.current &&
+              currentGroupIdRef.current === requestGroupId &&
+              currentMemberIdRef.current === requestMemberId;
+            if (stillCurrent) {
+              setIsRefreshingQueue(false);
+            }
+            refillInFlightRef.current = false;
+          });
+      }
       return;
     }
 
@@ -390,7 +447,7 @@ export default function RatePage() {
       },
     ]);
 
-    await setRatingValue(groupId, member.id, currentTitle.id, value);
+    void setRatingValue(groupId, member.id, currentTitle.id, value);
     await advance(currentTitle.id);
   }
 

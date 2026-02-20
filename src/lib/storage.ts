@@ -39,6 +39,12 @@ export type GroupSettings = {
   allowPG: boolean;
   allowPG13: boolean;
   allowR: boolean;
+  allowTVY: boolean;
+  allowTVY7: boolean;
+  allowTVG: boolean;
+  allowTVPG: boolean;
+  allowTV14: boolean;
+  allowTVMA: boolean;
   allow_members_invite_link: boolean;
   top_titles_limit: number;
 
@@ -154,6 +160,12 @@ export function normalizeGroupSettings(settings: GroupSettingsInput | undefined)
     allowPG: settings?.allowPG ?? true,
     allowPG13: settings?.allowPG13 ?? true,
     allowR: settings?.allowR ?? true,
+    allowTVY: settings?.allowTVY ?? true,
+    allowTVY7: settings?.allowTVY7 ?? true,
+    allowTVG: settings?.allowTVG ?? true,
+    allowTVPG: settings?.allowTVPG ?? true,
+    allowTV14: settings?.allowTV14 ?? true,
+    allowTVMA: settings?.allowTVMA ?? true,
     allow_members_invite_link: settings?.allow_members_invite_link ?? legacyAllowMembersInvite ?? false,
     top_titles_limit: normalizeTopTitlesLimit(settings?.top_titles_limit),
     ratingMode: settings?.ratingMode === "shortlist" ? "shortlist" : "unlimited",

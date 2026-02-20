@@ -1,6 +1,13 @@
 import "./globals.css";
 import type { Metadata } from "next";
+import { Manrope } from "next/font/google";
 import { AuthBootstrap } from "@/components/AuthBootstrap";
+
+const manrope = Manrope({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800"],
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "ChooseAMovie",
@@ -13,7 +20,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>
+      <body className={manrope.className}>
         <AuthBootstrap />
         {children}
       </body>

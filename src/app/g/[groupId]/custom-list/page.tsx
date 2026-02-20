@@ -486,7 +486,7 @@ export default function CustomListPage() {
               {shortlist.map((item) => (
                 <div
                   key={item.title_id}
-                  className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-[rgb(var(--card))] p-2"
+                  className="flex items-center justify-between gap-3 rounded-xl border border-white/12 bg-black/28 p-2 transition duration-200 hover:border-white/20 hover:bg-black/34"
                 >
                   <div className="flex min-w-0 items-center gap-3">
                     <PosterImage
@@ -540,7 +540,7 @@ export default function CustomListPage() {
                 return (
                   <div
                     key={`${item.media_type}:${item.id}`}
-                    className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-[rgb(var(--card))] p-2"
+                    className="flex items-center justify-between gap-3 rounded-xl border border-white/12 bg-black/28 p-2 transition duration-200 hover:border-white/20 hover:bg-black/34"
                   >
                     <div className="flex min-w-0 items-center gap-3">
                       <PosterImage

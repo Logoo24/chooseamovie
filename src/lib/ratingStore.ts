@@ -52,7 +52,7 @@ export async function setRating(
   saveRatings(groupId, memberId, local);
 
   if (!isSupabaseConfigured()) return;
-  await upsertRating(groupId, memberId, titleId, rating);
+  void upsertRating(groupId, memberId, titleId, rating);
 }
 
 function aggregateFromRecords(

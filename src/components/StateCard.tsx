@@ -20,18 +20,18 @@ export function StateCard({
   actionVariant = "primary",
 }: StateCardProps) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div className="flex items-center gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">{title}</h1>
         {badge ? <Pill>{badge}</Pill> : null}
       </div>
-      <Card>
+      <Card className="max-w-2xl">
         <CardTitle>{title}</CardTitle>
-        <div className="mt-2">
+        <div className="mt-3">
           <Muted>{description}</Muted>
         </div>
         {actionLabel && actionHref ? (
-          <div className="mt-4">
+          <div className="mt-5">
             <a href={actionHref}>
               <Button variant={actionVariant}>{actionLabel}</Button>
             </a>

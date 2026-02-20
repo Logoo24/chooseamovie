@@ -162,7 +162,7 @@ function ResultCard({
     : null;
 
   return (
-    <div className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
+    <div className="rounded-xl border border-white/12 bg-black/28 p-3 transition duration-200 hover:border-white/20 hover:bg-black/34">
       <div className="flex items-start gap-3">
         <div className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/20 bg-white/5 text-xs font-semibold text-white/90">
           {rank}
@@ -592,7 +592,7 @@ export default function ResultsPage() {
                 </div>
                 <div className="mt-3 space-y-3">
                   {memberRankings.map(({ member, rows }) => (
-                    <div key={member.id} className="rounded-xl border border-white/10 bg-[rgb(var(--card))] p-3">
+                    <div key={member.id} className="rounded-xl border border-white/12 bg-black/28 p-3">
                       <div className="text-sm font-semibold text-white">{member.name}</div>
                       {rows.length === 0 ? (
                         <div className="mt-2 text-xs text-white/60">No ratings yet.</div>

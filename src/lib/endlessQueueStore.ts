@@ -24,6 +24,7 @@ const MAX_PAGES_PER_REFILL = 5;
 const MAX_SEEN = 300;
 const noDiscoverResultsHintShownForGroup = new Set<string>();
 const movieMpaaById = new Map<number, string | null>();
+const tvRatingById = new Map<number, string | null>();
 
 type TrendingType = "movie" | "tv";
 
@@ -60,6 +61,10 @@ type TmdbMovieDetailsRatingResponse = {
   mpaa_rating?: string | null;
 };
 
+type TmdbTvDetailsRatingResponse = {
+  tv_rating?: string | null;
+};
+
 type DiscoverState = {
   settingsKey: string;
   nextPageByType: Record<TrendingType, number>;
@@ -83,12 +88,60 @@ function shouldFilterByMovieRating(settings: GroupSettings) {
   );
 }
 
+function shouldFilterByTvRating(settings: GroupSettings) {
+  return !(
+    settings.allowTVY &&
+    settings.allowTVY7 &&
+    settings.allowTVG &&
+    settings.allowTVPG &&
+    settings.allowTV14 &&
+    settings.allowTVMA
+  );
+}
+
 function isAllowedMovieRating(settings: GroupSettings, rating: "G" | "PG" | "PG-13" | "R" | null) {
   if (!rating) return true;
   if (rating === "G") return settings.allowG;
   if (rating === "PG") return settings.allowPG;
   if (rating === "PG-13") return settings.allowPG13;
   return settings.allowR;
+}
+
+function normalizeTvRating(
+  rating: string | null | undefined
+): "TV-Y" | "TV-Y7" | "TV-G" | "TV-PG" | "TV-14" | "TV-MA" | null {
+  const raw = (rating ?? "").trim().toUpperCase();
+  if (!raw) return null;
+  if (raw === "TVY") return "TV-Y";
+  if (raw === "TVY7") return "TV-Y7";
+  if (raw === "TVG") return "TV-G";
+  if (raw === "TVPG") return "TV-PG";
+  if (raw === "TV14") return "TV-14";
+  if (raw === "TVMA") return "TV-MA";
+  if (
+    raw === "TV-Y" ||
+    raw === "TV-Y7" ||
+    raw === "TV-G" ||
+    raw === "TV-PG" ||
+    raw === "TV-14" ||
+    raw === "TV-MA"
+  ) {
+    return raw;
+  }
+  return null;
+}
+
+function isAllowedTvRating(
+  settings: GroupSettings,
+  rating: "TV-Y" | "TV-Y7" | "TV-G" | "TV-PG" | "TV-14" | "TV-MA" | null
+) {
+  if (!rating) return true;
+  if (rating === "TV-Y") return settings.allowTVY;
+  if (rating === "TV-Y7") return settings.allowTVY7;
+  if (rating === "TV-G") return settings.allowTVG;
+  if (rating === "TV-PG") return settings.allowTVPG;
+  if (rating === "TV-14") return settings.allowTV14;
+  return settings.allowTVMA;
 }
 
 async function fetchMovieMpaaRating(tmdbId: number): Promise<"G" | "PG" | "PG-13" | "R" | null> {
@@ -108,6 +161,29 @@ async function fetchMovieMpaaRating(tmdbId: number): Promise<"G" | "PG" | "PG-13
     return normalized;
   } catch {
     movieMpaaById.set(tmdbId, null);
+    return null;
+  }
+}
+
+async function fetchTvRating(
+  tmdbId: number
+): Promise<"TV-Y" | "TV-Y7" | "TV-G" | "TV-PG" | "TV-14" | "TV-MA" | null> {
+  if (tvRatingById.has(tmdbId)) {
+    return normalizeTvRating(tvRatingById.get(tmdbId) ?? null);
+  }
+
+  try {
+    const response = await fetch(`/api/tmdb/details?type=tv&id=${tmdbId}`);
+    if (!response.ok) {
+      tvRatingById.set(tmdbId, null);
+      return null;
+    }
+    const body = (await response.json()) as TmdbTvDetailsRatingResponse;
+    const normalized = normalizeTvRating(body.tv_rating ?? null);
+    tvRatingById.set(tmdbId, normalized);
+    return normalized;
+  } catch {
+    tvRatingById.set(tmdbId, null);
     return null;
   }
 }
@@ -150,6 +226,12 @@ function endlessSettingsKey(settings: GroupSettings) {
     allowPG: settings.allowPG,
     allowPG13: settings.allowPG13,
     allowR: settings.allowR,
+    allowTVY: settings.allowTVY,
+    allowTVY7: settings.allowTVY7,
+    allowTVG: settings.allowTVG,
+    allowTVPG: settings.allowTVPG,
+    allowTV14: settings.allowTV14,
+    allowTVMA: settings.allowTVMA,
   });
 }
 
@@ -326,7 +408,9 @@ async function filterDiscoverRows(
   const minVoteCount = endlessSettings.filterUnpopular ? endlessSettings.minVoteCount ?? 200 : null;
   const byKey = new Map<string, EndlessQueueItem>();
   const enforceMovieRatings = shouldFilterByMovieRating(settings);
+  const enforceTvRatings = shouldFilterByTvRating(settings);
   let movieRatings = new Map<number, "G" | "PG" | "PG-13" | "R" | null>();
+  let tvRatings = new Map<number, "TV-Y" | "TV-Y7" | "TV-G" | "TV-PG" | "TV-14" | "TV-MA" | null>();
 
   if (enforceMovieRatings) {
     const movieIds = Array.from(new Set(rows.filter((row) => row.type === "movie").map((row) => row.id)));
@@ -334,6 +418,12 @@ async function filterDiscoverRows(
       movieIds.map(async (id) => [id, await fetchMovieMpaaRating(id)] as const)
     );
     movieRatings = new Map(ratingPairs);
+  }
+
+  if (enforceTvRatings) {
+    const tvIds = Array.from(new Set(rows.filter((row) => row.type === "tv").map((row) => row.id)));
+    const ratingPairs = await Promise.all(tvIds.map(async (id) => [id, await fetchTvRating(id)] as const));
+    tvRatings = new Map(ratingPairs);
   }
 
   for (const row of rows) {
@@ -349,6 +439,10 @@ async function filterDiscoverRows(
     if (enforceMovieRatings && row.type === "movie") {
       const rating = movieRatings.get(row.id) ?? null;
       if (!isAllowedMovieRating(settings, rating)) continue;
+    }
+    if (enforceTvRatings && row.type === "tv") {
+      const rating = tvRatings.get(row.id) ?? null;
+      if (!isAllowedTvRating(settings, rating)) continue;
     }
     const titleId = row.title_key?.trim() || buildTmdbTitleKey(row.type, row.id);
     if (!titleId) continue;
@@ -476,7 +570,13 @@ async function refillUpcomingQueue(
 }
 
 export function getUpcomingQueue(groupId: string, memberId: string) {
-  return loadUpcoming(groupId, memberId);
+  const seen = new Set(loadSeen(groupId, memberId));
+  const ratedLocal = localRatedTitleKeys(groupId, memberId);
+  const queue = loadUpcoming(groupId, memberId).filter((item) => {
+    return !seen.has(item.title_id) && !ratedLocal.has(item.title_id);
+  });
+  saveUpcoming(groupId, memberId, queue);
+  return queue;
 }
 
 export async function ensureEndlessQueue(
@@ -491,8 +591,7 @@ export async function ensureEndlessQueue(
 
   const seen = new Set(loadSeen(groupId, memberId));
   const ratedLocal = localRatedTitleKeys(groupId, memberId);
-  const ratedRemote = await remoteRatedTitleKeys(groupId, memberId);
-  const rated = new Set([...ratedLocal, ...ratedRemote]);
+  let rated = new Set(ratedLocal);
 
   const dedupedUpcoming = loadUpcoming(groupId, memberId).filter((item) => {
     return !seen.has(item.title_id) && !rated.has(item.title_id);
@@ -503,11 +602,22 @@ export async function ensureEndlessQueue(
     return dedupedUpcoming;
   }
 
+  // Only ask remote ratings when the queue is low; this avoids repeated network
+  // round-trips during normal rating flow.
+  const ratedRemote = await remoteRatedTitleKeys(groupId, memberId);
+  rated = new Set([...ratedLocal, ...ratedRemote]);
+  const remoteDedupedUpcoming = dedupedUpcoming.filter((item) => !ratedRemote.has(item.title_id));
+
+  if (remoteDedupedUpcoming.length >= LOW_WATERMARK) {
+    saveUpcoming(groupId, memberId, remoteDedupedUpcoming);
+    return remoteDedupedUpcoming;
+  }
+
   const next = await refillUpcomingQueue(
     groupId,
     memberId,
     effectiveSettings,
-    dedupedUpcoming,
+    remoteDedupedUpcoming,
     seen,
     rated
   );
