@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { GroupTabs } from "@/components/GroupTabs";
@@ -17,7 +18,7 @@ import {
 import { customListLabel } from "@/lib/groupLabels";
 import { getHostDisplayName } from "@/lib/hostProfileStore";
 import { isHostForGroup } from "@/lib/hostStore";
-import { ensureMember } from "@/lib/memberStore";
+import { ensureMember, getCurrentGroupMember } from "@/lib/memberStore";
 import { setRating as setRatingValue } from "@/lib/ratingStore";
 import { ensureAuth } from "@/lib/api";
 import {
@@ -29,12 +30,14 @@ import { parseTmdbTitleKey } from "@/lib/tmdbTitleKey";
 import { getShortlist, type ShortlistItem } from "@/lib/shortlistStore";
 import { loadGroup, type Group } from "@/lib/storage";
 import {
+  clearActiveMember,
   getActiveMember,
   loadRatings,
   setActiveMember,
   type Member,
   type RatingValue,
 } from "@/lib/ratings";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type RateTitle = {
   id: string;
@@ -76,6 +79,7 @@ type DetailsResponse = {
 };
 
 const ENDLESS_PREFETCH_THRESHOLD = 12;
+const STAR_ADVANCE_DELAY_MS = 250;
 
 function buildLegacyShortlistTitleId(name: string, idx: number) {
   return `sl:${idx}:${name.toLowerCase().replace(/\s+/g, "-").slice(0, 40)}`;
@@ -160,6 +164,7 @@ export default function RatePage() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentStars, setCurrentStars] = useState(0);
   const [unratedTitles, setUnratedTitles] = useState<RateTitle[]>([]);
+  const [isSubmittingStarRating, setIsSubmittingStarRating] = useState(false);
   const [isRefreshingQueue, setIsRefreshingQueue] = useState(false);
   const [isCheckingMoreTitles, setIsCheckingMoreTitles] = useState(false);
   const [didExhaustionProbe, setDidExhaustionProbe] = useState(false);
@@ -177,6 +182,7 @@ export default function RatePage() {
   const isMountedRef = useRef(true);
   const currentGroupIdRef = useRef(groupId);
   const currentMemberIdRef = useRef<string | null>(null);
+  const pendingStarAdvanceTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     currentGroupIdRef.current = groupId;
@@ -189,6 +195,10 @@ export default function RatePage() {
   useEffect(() => {
     return () => {
       isMountedRef.current = false;
+      if (pendingStarAdvanceTimeoutRef.current !== null) {
+        window.clearTimeout(pendingStarAdvanceTimeoutRef.current);
+        pendingStarAdvanceTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -239,6 +249,58 @@ export default function RatePage() {
       alive = false;
     };
   }, [groupId, router, authRetryKey]);
+
+  useEffect(() => {
+    const memberId = member?.id ?? null;
+    if (!memberId) return;
+    let alive = true;
+    let fallbackIntervalId: number | null = null;
+    let unsubscribeRealtime: (() => void) | null = null;
+
+    const handleMembershipCheck = async () => {
+      const mine = await getCurrentGroupMember(groupId);
+      if (!alive) return;
+      if (mine.member) {
+        if (mine.member.id !== memberId) {
+          setActiveMember(groupId, mine.member);
+          setMember(mine.member);
+        }
+        return;
+      }
+
+      clearActiveMember(groupId);
+      setMember(null);
+      setRedirectingToHome(true);
+      router.replace(`/g/${groupId}?removed=1`);
+    };
+
+    void handleMembershipCheck();
+    fallbackIntervalId = window.setInterval(() => {
+      void handleMembershipCheck();
+    }, 30_000);
+
+    if (isSupabaseConfigured() && supabase) {
+      const channel = supabase
+        .channel(`rate-membership:${groupId}:${memberId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "members", filter: `group_id=eq.${groupId}` },
+          () => {
+            void handleMembershipCheck();
+          }
+        )
+        .subscribe();
+      unsubscribeRealtime = () => {
+        void channel.unsubscribe();
+      };
+    }
+
+    return () => {
+      alive = false;
+      if (fallbackIntervalId !== null) window.clearInterval(fallbackIntervalId);
+      if (unsubscribeRealtime) unsubscribeRealtime();
+    };
+  }, [groupId, member?.id, router]);
 
   useEffect(() => {
     let alive = true;
@@ -310,6 +372,7 @@ export default function RatePage() {
   }, [group, member, groupId]);
 
   const currentTitle = unratedTitles[currentIndex] ?? null;
+  const currentTitleId = currentTitle?.id ?? null;
   const isCustomListMode = group?.settings.ratingMode === "shortlist";
   const remainingCount = Math.max(0, unratedTitles.length - currentIndex);
 
@@ -319,15 +382,15 @@ export default function RatePage() {
   }, [groupId, member?.id, group?.settings.ratingMode]);
 
   useEffect(() => {
-    if (currentTitle) {
+    if (currentTitleId) {
       setDidExhaustionProbe(false);
     }
-  }, [currentTitle?.id]);
+  }, [currentTitleId]);
 
   useEffect(() => {
     let alive = true;
     if (!group || !member || isCustomListMode) return;
-    if (currentTitle) return;
+    if (currentTitleId) return;
     if (isRefreshingQueue || isCheckingMoreTitles || didExhaustionProbe) return;
 
     (async () => {
@@ -349,7 +412,7 @@ export default function RatePage() {
       alive = false;
     };
   }, [
-    currentTitle?.id,
+    currentTitleId,
     didExhaustionProbe,
     group,
     groupId,
@@ -360,9 +423,9 @@ export default function RatePage() {
   ]);
 
   useEffect(() => {
-    if (!currentTitle || !group || group.settings.ratingMode === "shortlist") return;
-    void upsertTitleSnapshot(currentTitle.id, {
-      title_id: currentTitle.id,
+    if (!currentTitleId || !currentTitle || !group || group.settings.ratingMode === "shortlist") return;
+    void upsertTitleSnapshot(currentTitleId, {
+      title_id: currentTitleId,
       title: currentTitle.name,
       year: currentTitle.year ?? null,
       poster_path: currentTitle.posterPath ?? null,
@@ -373,7 +436,7 @@ export default function RatePage() {
       upstreamPayloadKeys: currentTitle.tmdbPayloadKeys ?? [],
       tmdbSucceeded: true,
     });
-  }, [currentTitle, group]);
+  }, [currentTitle, currentTitleId, group]);
 
   useEffect(() => {
     let alive = true;
@@ -439,7 +502,7 @@ export default function RatePage() {
       alive = false;
       setIsLoadingProviders(false);
     };
-  }, [currentTitle?.id, currentTitle?.tmdbId, currentTitle?.tmdbType, currentTitle?.name, currentTitle?.type]);
+  }, [currentTitle, currentTitleId]);
 
   async function advance(currentTitleId: string) {
     if (!member) return;
@@ -500,6 +563,26 @@ export default function RatePage() {
 
     void setRatingValue(groupId, member.id, currentTitle.id, value);
     await advance(currentTitle.id);
+  }
+
+  function onStarRate(value: 1 | 2 | 3 | 4 | 5) {
+    if (isSubmittingStarRating) return;
+    setCurrentStars(value);
+    setIsSubmittingStarRating(true);
+
+    if (pendingStarAdvanceTimeoutRef.current !== null) {
+      window.clearTimeout(pendingStarAdvanceTimeoutRef.current);
+      pendingStarAdvanceTimeoutRef.current = null;
+    }
+
+    pendingStarAdvanceTimeoutRef.current = window.setTimeout(() => {
+      pendingStarAdvanceTimeoutRef.current = null;
+      void applyRating(value).finally(() => {
+        if (isMountedRef.current) {
+          setIsSubmittingStarRating(false);
+        }
+      });
+    }, STAR_ADVANCE_DELAY_MS);
   }
 
   async function onUndo() {
@@ -645,12 +728,12 @@ export default function RatePage() {
           </div>
         ) : null}
 
-        <div className="grid gap-4 md:grid-cols-[280px_1fr] md:items-start">
+        <div className="grid gap-3 md:grid-cols-[280px_1fr] md:items-start md:gap-4">
           <Card>
             <PosterImage
               src={posterUrl}
               alt={currentTitle.name}
-              className="mx-auto w-full max-w-[260px] rounded-xl"
+              className="mx-auto w-full max-w-[176px] rounded-xl sm:max-w-[220px] md:max-w-[260px]"
               roundedClassName="rounded-xl"
             />
             {isRefreshingQueue ? <div className="mt-2 text-xs text-white/55">Updating queue...</div> : null}
@@ -658,8 +741,37 @@ export default function RatePage() {
 
           <div className="space-y-4">
             <Card>
+              <CardTitle>Rate this title</CardTitle>
+              <div className="mt-3 space-y-3 sm:mt-4 sm:space-y-4">
+                <StarRating
+                  value={currentStars}
+                  onChange={onStarRate}
+                  disabled={isSubmittingStarRating}
+                  showLabels={false}
+                  showNumericHint={false}
+                />
+
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Button
+                    variant="ghost"
+                    onClick={() => void onUndo()}
+                    disabled={history.length === 0 || isSubmittingStarRating}
+                  >
+                    Undo
+                  </Button>
+                  <Button variant="secondary" onClick={() => void applyRating(0)} disabled={isSubmittingStarRating}>
+                    Skip
+                  </Button>
+                </div>
+              </div>
+            </Card>
+
+            <Card>
               <CardTitle>{currentTitle.name}</CardTitle>
-              <div className="mt-2 min-h-[72px] text-sm text-white/70" style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+              <div
+                className="mt-2 min-h-[72px] text-sm text-white/70"
+                style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+              >
                 {currentTitle.description ?? "No overview available yet."}
               </div>
               <div className="mt-3">
@@ -670,32 +782,6 @@ export default function RatePage() {
                 >
                   <Button variant="secondary">More info</Button>
                 </a>
-              </div>
-            </Card>
-
-            <Card>
-              <CardTitle>Rate this title</CardTitle>
-              <div className="mt-4 min-h-[138px] space-y-4">
-                <StarRating
-                  value={currentStars}
-                  onChange={(value) => {
-                    setCurrentStars(value);
-                    if (value > 0) {
-                      void applyRating(value as RatingValue);
-                    }
-                  }}
-                  showLabels={false}
-                  showNumericHint={false}
-                />
-
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <Button variant="ghost" onClick={() => void onUndo()} disabled={history.length === 0}>
-                    Undo
-                  </Button>
-                  <Button variant="secondary" onClick={() => void applyRating(0)}>
-                    Skip
-                  </Button>
-                </div>
               </div>
             </Card>
 
@@ -722,9 +808,11 @@ export default function RatePage() {
                         title={provider.provider_name}
                       >
                         {provider.logo_path ? (
-                          <img
+                          <Image
                             src={`https://image.tmdb.org/t/p/w92${provider.logo_path}`}
                             alt={provider.provider_name}
+                            width={24}
+                            height={24}
                             className="h-6 w-6 rounded object-contain"
                           />
                         ) : null}

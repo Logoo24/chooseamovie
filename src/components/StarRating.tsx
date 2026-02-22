@@ -16,7 +16,10 @@ function Star({ filled }: { filled: boolean }) {
   return (
     <svg
       viewBox="0 0 24 24"
-      className={["h-7 w-7", filled ? "fill-current" : "fill-none stroke-current stroke-1.5"].join(" ")}
+      className={[
+        "h-6 w-6 sm:h-7 sm:w-7",
+        filled ? "fill-current" : "fill-none stroke-current stroke-1.5",
+      ].join(" ")}
       aria-hidden="true"
     >
       <path d="m12 3 2.7 5.46 6.03.88-4.36 4.24 1.03 6-5.4-2.84-5.4 2.84 1.03-6L3.27 9.34l6.03-.88L12 3Z" />
@@ -102,7 +105,7 @@ export function StarRating({
         role="radiogroup"
         aria-label="Star rating"
         onKeyDown={onKeyDown}
-        className="flex items-center justify-center gap-2"
+        className="flex items-center justify-center gap-1.5 sm:gap-2"
       >
         {[1, 2, 3, 4, 5].map((n) => {
           const isActive = n <= activeValue;
@@ -126,7 +129,7 @@ export function StarRating({
               onBlur={() => setHoverValue(null)}
               onClick={() => choose(n as 1 | 2 | 3 | 4 | 5)}
               className={[
-                "group relative flex h-14 w-14 items-center justify-center rounded-full border transition-[background-color,border-color,box-shadow,transform,opacity] duration-220",
+                "group relative flex h-11 w-11 items-center justify-center rounded-full border transition-[background-color,border-color,box-shadow,transform,opacity] duration-220 sm:h-14 sm:w-14",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--yellow))]/30",
                 disabled ? "opacity-60" : "",
                 isActive

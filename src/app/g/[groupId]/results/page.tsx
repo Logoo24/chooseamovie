@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { GroupTabs } from "@/components/GroupTabs";
 import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
 import { Button, Card, CardTitle, Muted, Pill } from "@/components/ui";
-import { getActiveMember } from "@/lib/ratings";
+import { clearActiveMember, getActiveMember } from "@/lib/ratings";
 import { getShortlist, type ShortlistItem, type ShortlistSnapshot } from "@/lib/shortlistStore";
 import { loadGroup, type Group } from "@/lib/storage";
 import { ensureAuth } from "@/lib/api";
@@ -15,6 +15,7 @@ import { getTitleSnapshots, type TitleSnapshot } from "@/lib/titleCacheStore";
 import { parseTmdbTitleKey } from "@/lib/tmdbTitleKey";
 import { getGroupTopTitles, type GroupTopTitle } from "@/lib/topTitlesStore";
 import { getGroupRatings } from "@/lib/ratingStore";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { type Member } from "@/lib/ratings";
 
 const TOP_LIMIT_OPTIONS = [10, 20, 50, 100] as const;
@@ -245,6 +246,7 @@ export default function ResultsPage() {
   const [topRows, setTopRows] = useState<GroupTopTitle[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [accessDenied, setAccessDenied] = useState(false);
+  const [memberRemovedByHost, setMemberRemovedByHost] = useState(false);
   const [readError, setReadError] = useState<"none" | "network">("none");
   const [isLoadingRows, setIsLoadingRows] = useState(true);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -255,17 +257,18 @@ export default function ResultsPage() {
   const [topLimit, setTopLimit] = useState<(typeof TOP_LIMIT_OPTIONS)[number]>(10);
   const [topSortBy, setTopSortBy] = useState<TopSortBy>("total_stars");
   const [showMemberRankings, setShowMemberRankings] = useState(false);
+  const activeMemberId = activeMember?.id ?? null;
   const updatingTimerRef = useRef<number | null>(null);
   const hideTimerRef = useRef<number | null>(null);
   const shownAtRef = useRef<number | null>(null);
   const isUpdatingRef = useRef(false);
 
-  function setUpdatingVisible(next: boolean) {
+  const setUpdatingVisible = useCallback((next: boolean) => {
     isUpdatingRef.current = next;
     setIsUpdating(next);
-  }
+  }, []);
 
-  function beginUpdatingIndicator() {
+  const beginUpdatingIndicator = useCallback(() => {
     if (hideTimerRef.current) {
       window.clearTimeout(hideTimerRef.current);
       hideTimerRef.current = null;
@@ -276,9 +279,9 @@ export default function ResultsPage() {
       setUpdatingVisible(true);
       updatingTimerRef.current = null;
     }, 300);
-  }
+  }, [setUpdatingVisible]);
 
-  function endUpdatingIndicator() {
+  const endUpdatingIndicator = useCallback(() => {
     if (updatingTimerRef.current) {
       window.clearTimeout(updatingTimerRef.current);
       updatingTimerRef.current = null;
@@ -292,11 +295,14 @@ export default function ResultsPage() {
       setUpdatingVisible(false);
       hideTimerRef.current = null;
     }, wait);
-  }
+  }, [setUpdatingVisible]);
 
   useEffect(() => {
     let alive = true;
     let inFlight = false;
+    let scheduledRefreshTimer: number | null = null;
+    let fallbackIntervalId: number | null = null;
+    let unsubscribeRealtime: (() => void) | null = null;
     setIsLoadingRows(true);
     setGroup(loadGroup(groupId));
     setActiveMember(getActiveMember(groupId));
@@ -323,7 +329,13 @@ export default function ResultsPage() {
         ]);
         if (!alive) return;
 
-        setAccessDenied(Boolean(topLoaded.accessDenied || membersLoaded.accessDenied));
+        const denied = Boolean(topLoaded.accessDenied || membersLoaded.accessDenied);
+        setAccessDenied(denied);
+        if (denied && activeMemberId) {
+          clearActiveMember(groupId);
+          setActiveMember(null);
+          setMemberRemovedByHost(true);
+        }
         setReadError(
           topLoaded.error === "network" || membersLoaded.error === "network" ? "network" : "none"
         );
@@ -341,27 +353,66 @@ export default function ResultsPage() {
       }
     };
 
+    const scheduleBackgroundRefresh = () => {
+      if (scheduledRefreshTimer !== null) return;
+      scheduledRefreshTimer = window.setTimeout(() => {
+        scheduledRefreshTimer = null;
+        void fetchRatings({ background: true });
+      }, 180);
+    };
+
     void fetchRatings();
-    const intervalId = window.setInterval(() => {
+    fallbackIntervalId = window.setInterval(() => {
       void fetchRatings({ background: true });
-    }, 3000);
+    }, 30_000);
+
+    if (isSupabaseConfigured() && supabase) {
+      const channel = supabase
+        .channel(`group-results:${groupId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "members", filter: `group_id=eq.${groupId}` },
+          scheduleBackgroundRefresh
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "ratings", filter: `group_id=eq.${groupId}` },
+          scheduleBackgroundRefresh
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "group_top_titles", filter: `group_id=eq.${groupId}` },
+          scheduleBackgroundRefresh
+        )
+        .subscribe();
+      unsubscribeRealtime = () => {
+        void channel.unsubscribe();
+      };
+    }
 
     return () => {
       alive = false;
+      if (scheduledRefreshTimer !== null) {
+        window.clearTimeout(scheduledRefreshTimer);
+      }
       if (updatingTimerRef.current) {
         window.clearTimeout(updatingTimerRef.current);
       }
       if (hideTimerRef.current) {
         window.clearTimeout(hideTimerRef.current);
       }
-      window.clearInterval(intervalId);
+      if (fallbackIntervalId !== null) {
+        window.clearInterval(fallbackIntervalId);
+      }
+      if (unsubscribeRealtime) unsubscribeRealtime();
     };
-  }, [groupId, authRetryKey]);
+  }, [activeMemberId, authRetryKey, beginUpdatingIndicator, endUpdatingIndicator, groupId]);
 
   useEffect(() => {
     setTopLimit(10);
     setTopSortBy("total_stars");
     setShowMemberRankings(false);
+    setMemberRemovedByHost(false);
     setShortlistFallback({});
     setTitleCache({});
     setPerMemberRatings({});
@@ -544,7 +595,9 @@ export default function ResultsPage() {
           title="Join to see results"
           badge="Members only"
           description={
-            activeMember
+            memberRemovedByHost
+              ? "You were removed from this group by the host."
+              : activeMember
               ? "Your current profile does not have access to shared results for this group."
               : "Join this group from Home first, then come back to results."
           }

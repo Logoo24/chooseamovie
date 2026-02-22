@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { isSupabaseAdminConfigured, supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const TMDB_TOKEN_ENV_VAR = "TMDB_READ_TOKEN";
@@ -9,7 +10,8 @@ type ApiErrorCode =
   | "not_found"
   | "upstream_error"
   | "config_error"
-  | "network_error";
+  | "network_error"
+  | "rate_limited";
 
 type ApiErrorBody = {
   error: {
@@ -22,6 +24,39 @@ type ApiErrorBody = {
 type TmdbFetchOptions = {
   query?: Record<string, string | number | undefined>;
   callSite?: string;
+};
+
+type TmdbProxyRateLimitBucket = {
+  count: number;
+  resetAtMs: number;
+  lastSeenAtMs: number;
+};
+
+const TMDB_PROXY_WINDOW_MS = 60_000;
+const TMDB_PROXY_MAX_REQUESTS_PER_WINDOW = 80;
+const TMDB_PROXY_SUSPECTED_BOT_MAX_REQUESTS_PER_WINDOW = 20;
+const TMDB_PROXY_BUCKET_TTL_MS = 10 * 60_000;
+const tmdbProxyBuckets = new Map<string, TmdbProxyRateLimitBucket>();
+const likelyAutomatedUserAgentPatterns = [
+  /bot/i,
+  /crawler/i,
+  /spider/i,
+  /curl/i,
+  /wget/i,
+  /python/i,
+  /node-fetch/i,
+  /axios/i,
+  /postmanruntime/i,
+  /insomnia/i,
+  /httpie/i,
+  /go-http-client/i,
+];
+
+type SharedRateLimitRpcRow = {
+  allowed: boolean;
+  retry_after_seconds: number;
+  remaining: number;
+  reset_at: string;
 };
 
 export class MissingTmdbTokenError extends Error {
@@ -55,7 +90,8 @@ export function errorJson(
   status: number,
   code: ApiErrorCode,
   message: string,
-  details?: string
+  details?: string,
+  extraHeaders?: Record<string, string>
 ) {
   const body: ApiErrorBody = {
     error: {
@@ -67,8 +103,167 @@ export function errorJson(
 
   return NextResponse.json(body, {
     status,
-    headers: jsonHeaders("no-store"),
+    headers: {
+      ...jsonHeaders("no-store"),
+      ...(extraHeaders ?? {}),
+    },
   });
+}
+
+function tmdbProxyClientAddress(request: NextRequest) {
+  const xForwardedFor = request.headers.get("x-forwarded-for");
+  if (xForwardedFor) {
+    const first = xForwardedFor.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  const realIp = request.headers.get("x-real-ip")?.trim();
+  if (realIp) return realIp;
+  return "unknown";
+}
+
+function isLikelyAutomatedUserAgent(userAgent: string) {
+  if (!userAgent.trim()) return true;
+  return likelyAutomatedUserAgentPatterns.some((pattern) => pattern.test(userAgent));
+}
+
+function cleanupTmdbProxyBuckets(nowMs: number) {
+  for (const [key, value] of tmdbProxyBuckets) {
+    if (value.lastSeenAtMs + TMDB_PROXY_BUCKET_TTL_MS < nowMs) {
+      tmdbProxyBuckets.delete(key);
+    }
+  }
+}
+
+async function checkSharedTmdbRateLimit(input: {
+  bucketKey: string;
+  maxRequests: number;
+  callSite: string;
+}): Promise<{
+  allowed: boolean;
+  retryAfterSeconds: number;
+} | null> {
+  if (!isSupabaseAdminConfigured() || !supabaseAdmin) return null;
+
+  try {
+    const response = await supabaseAdmin.rpc("acquire_api_rate_limit", {
+      p_scope: "tmdb_proxy",
+      p_client_key: input.bucketKey,
+      p_window_seconds: Math.floor(TMDB_PROXY_WINDOW_MS / 1000),
+      p_max_requests: input.maxRequests,
+    });
+
+    if (response.error) {
+      if (process.env.NODE_ENV === "development") {
+        console.warn("[tmdb] shared rate limit RPC error; falling back to memory limiter", {
+          callSite: input.callSite,
+          message: response.error.message,
+          code: response.error.code,
+        });
+      }
+      return null;
+    }
+
+    const row = Array.isArray(response.data)
+      ? ((response.data[0] as SharedRateLimitRpcRow | undefined) ?? null)
+      : (response.data as SharedRateLimitRpcRow | null);
+
+    if (!row) return null;
+    const retryAfterSeconds = Math.max(0, Number(row.retry_after_seconds ?? 0) || 0);
+
+    return {
+      allowed: Boolean(row.allowed),
+      retryAfterSeconds,
+    };
+  } catch (error) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[tmdb] shared rate limit check failed; falling back to memory limiter", {
+        callSite: input.callSite,
+        error: String(error),
+      });
+    }
+    return null;
+  }
+}
+
+function checkLocalTmdbRateLimit(input: {
+  bucketKey: string;
+  maxRequests: number;
+}): {
+  allowed: boolean;
+  retryAfterSeconds: number;
+} {
+  const nowMs = Date.now();
+  cleanupTmdbProxyBuckets(nowMs);
+  const existing = tmdbProxyBuckets.get(input.bucketKey);
+  const bucket =
+    !existing || existing.resetAtMs <= nowMs
+      ? {
+          count: 0,
+          resetAtMs: nowMs + TMDB_PROXY_WINDOW_MS,
+          lastSeenAtMs: nowMs,
+        }
+      : existing;
+
+  bucket.count += 1;
+  bucket.lastSeenAtMs = nowMs;
+  tmdbProxyBuckets.set(input.bucketKey, bucket);
+
+  if (bucket.count <= input.maxRequests) {
+    return {
+      allowed: true,
+      retryAfterSeconds: 0,
+    };
+  }
+
+  return {
+    allowed: false,
+    retryAfterSeconds: Math.max(1, Math.ceil((bucket.resetAtMs - nowMs) / 1000)),
+  };
+}
+
+export async function guardTmdbProxyRequest(
+  request: NextRequest,
+  callSite: string
+): Promise<NextResponse | null> {
+  const userAgent = request.headers.get("user-agent")?.trim() ?? "";
+  const likelyAutomated = isLikelyAutomatedUserAgent(userAgent);
+  const maxRequests = likelyAutomated
+    ? TMDB_PROXY_SUSPECTED_BOT_MAX_REQUESTS_PER_WINDOW
+    : TMDB_PROXY_MAX_REQUESTS_PER_WINDOW;
+
+  const clientAddress = tmdbProxyClientAddress(request);
+  const uaFingerprint = userAgent.slice(0, 120).toLowerCase() || "no-ua";
+  const bucketKey = `${clientAddress}|${uaFingerprint}`;
+  const sharedDecision = await checkSharedTmdbRateLimit({
+    bucketKey,
+    maxRequests,
+    callSite,
+  });
+  const decision = sharedDecision ?? checkLocalTmdbRateLimit({ bucketKey, maxRequests });
+
+  if (decision.allowed) return null;
+
+  const retryAfterSeconds = Math.max(1, decision.retryAfterSeconds);
+  if (process.env.NODE_ENV === "development") {
+    console.warn("[tmdb] rate limit triggered", {
+      callSite,
+      clientAddress,
+      likelyAutomated,
+      maxRequests,
+      retryAfterSeconds,
+      source: sharedDecision ? "supabase" : "memory",
+    });
+  }
+
+  return errorJson(
+    429,
+    "rate_limited",
+    "Too many TMDB requests. Please wait and try again.",
+    `Retry after ${retryAfterSeconds} seconds.`,
+    {
+      "Retry-After": String(retryAfterSeconds),
+    }
+  );
 }
 
 export function parseRequiredString(

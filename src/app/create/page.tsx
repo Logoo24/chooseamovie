@@ -368,31 +368,6 @@ export default function CreateGroupPage() {
                     </div>
                   </div>
 
-                  <Card interactive={false}>
-                    <CardTitle>Invite sharing</CardTitle>
-                    <div className="mt-3 space-y-2">
-                      <label className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 hover:bg-white/10">
-                        <div>
-                          <div className="text-sm font-semibold">Allow members to share invite link</div>
-                          <div className="text-sm text-white/60">
-                            When on, joined members can copy and share the group invite.
-                          </div>
-                        </div>
-                        <input
-                          type="checkbox"
-                          checked={settings.allow_members_invite_link}
-                          onChange={(e) =>
-                            setSettings((s) => ({
-                              ...s,
-                              allow_members_invite_link: e.target.checked,
-                            }))
-                          }
-                          className="h-5 w-5 accent-[rgb(var(--yellow))]"
-                        />
-                      </label>
-                    </div>
-                  </Card>
-
                   {settings.ratingMode === "unlimited" ? (
                     <div className="space-y-3">
                       <Card interactive={false}>

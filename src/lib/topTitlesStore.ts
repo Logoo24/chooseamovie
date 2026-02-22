@@ -55,7 +55,7 @@ function loadLocalTopTitles(groupId: string): GroupTopTitle[] {
     }>;
     if (!Array.isArray(parsed)) return [];
     const normalized = parsed
-      .map((row) => {
+      .map((row): GroupTopTitle | null => {
         const titleId = String(row.titleId ?? "").trim();
         if (!titleId) return null;
         const avg = Number(row.avg ?? 0);
@@ -70,7 +70,7 @@ function loadLocalTopTitles(groupId: string): GroupTopTitle[] {
           avg: Number.isFinite(avg) ? avg : 0,
           votes: Number.isFinite(votes) ? votes : 0,
           rank: null,
-        } satisfies GroupTopTitle;
+        };
       })
       .filter((row): row is GroupTopTitle => row !== null);
 
@@ -88,7 +88,7 @@ function saveLocalTopTitles(groupId: string, rows: GroupTopTitle[]) {
 function normalizeRows(
   data: Array<{
     title_id: string;
-    total_stars?: number;
+    total_stars?: number | string | null;
     avg_rating: number | string;
     rating_count: number;
   }>

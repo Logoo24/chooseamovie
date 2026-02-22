@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { GroupTabs } from "@/components/GroupTabs";
 import { PosterImage } from "@/components/PosterImage";
@@ -17,9 +17,10 @@ import {
   removeGroupMember,
 } from "@/lib/memberStore";
 import { getGroupRatings, type GroupRatingsResult } from "@/lib/ratingStore";
-import { getActiveMember, setActiveMember, type Member } from "@/lib/ratings";
+import { clearActiveMember, getActiveMember, setActiveMember, type Member } from "@/lib/ratings";
 import { getShortlist, type ShortlistItem, type ShortlistSnapshot } from "@/lib/shortlistStore";
 import { ensureAuth, getAuthUserId } from "@/lib/api";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { getTitleSnapshots, type TitleSnapshot } from "@/lib/titleCacheStore";
 import { parseTmdbTitleKey } from "@/lib/tmdbTitleKey";
 import { getGroupTopTitles, type GroupTopTitle } from "@/lib/topTitlesStore";
@@ -178,6 +179,7 @@ export default function GroupHubPage() {
   const params = useParams<{ groupId: string }>();
   const groupId = params.groupId;
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [group, setGroup] = useState<Group | null>(null);
   const [isLoadingGroup, setIsLoadingGroup] = useState(true);
@@ -199,6 +201,9 @@ export default function GroupHubPage() {
     "none"
   );
   const [isRemovingMemberId, setIsRemovingMemberId] = useState<string | null>(null);
+  const [memberActionError, setMemberActionError] = useState<"none" | "forbidden" | "network">("none");
+  const [memberRemovedNotice, setMemberRemovedNotice] = useState(false);
+  const activeMemberId = activeMember?.id ?? null;
 
   useEffect(() => {
     let alive = true;
@@ -252,12 +257,23 @@ export default function GroupHubPage() {
   }, [groupId, authRetryKey]);
 
   useEffect(() => {
+    if (searchParams.get("removed") === "1") {
+      setMemberRemovedNotice(true);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
     if (!group || authBlocked) return;
     let alive = true;
-    let intervalId: number | null = null;
+    let inFlight = false;
+    let scheduledFetchTimer: number | null = null;
+    let fallbackIntervalId: number | null = null;
+    let unsubscribeRealtime: (() => void) | null = null;
 
-    (async () => {
-      const fetch = async () => {
+    const fetchSnapshot = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
         const [memberRes, ratingRes, topRes] = await Promise.all([
           listGroupMembers(groupId),
           getGroupRatings(groupId),
@@ -265,50 +281,73 @@ export default function GroupHubPage() {
         ]);
 
         if (!alive) return;
+        const isRemovedByHost = Boolean(activeMemberId && ratingRes.accessDenied);
+        if (isRemovedByHost) {
+          clearActiveMember(groupId);
+          setActiveMemberState(null);
+          setMemberRemovedNotice(true);
+        }
+
         setMembers(memberRes.members);
         setRatings(ratingRes);
         setTopRows((current) => {
           if (topRes.rows.length === 0 && current.length > 0) return current;
           return topRes.rows;
         });
-      };
+      } finally {
+        inFlight = false;
+      }
+    };
 
-      await fetch();
-      intervalId = window.setInterval(() => {
-        void fetch();
-      }, 3000);
-    })();
+    const scheduleFetch = () => {
+      if (scheduledFetchTimer !== null) return;
+      scheduledFetchTimer = window.setTimeout(() => {
+        scheduledFetchTimer = null;
+        void fetchSnapshot();
+      }, 180);
+    };
+
+    void fetchSnapshot();
+    fallbackIntervalId = window.setInterval(() => {
+      void fetchSnapshot();
+    }, 30_000);
+
+    if (isSupabaseConfigured() && supabase) {
+      const channel = supabase
+        .channel(`group-hub:${groupId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "members", filter: `group_id=eq.${groupId}` },
+          scheduleFetch
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "ratings", filter: `group_id=eq.${groupId}` },
+          scheduleFetch
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "group_top_titles", filter: `group_id=eq.${groupId}` },
+          scheduleFetch
+        )
+        .subscribe();
+      unsubscribeRealtime = () => {
+        void channel.unsubscribe();
+      };
+    }
 
     return () => {
       alive = false;
-      if (intervalId) window.clearInterval(intervalId);
+      if (scheduledFetchTimer !== null) window.clearTimeout(scheduledFetchTimer);
+      if (fallbackIntervalId !== null) window.clearInterval(fallbackIntervalId);
+      if (unsubscribeRealtime) unsubscribeRealtime();
     };
-  }, [group, groupId, authBlocked]);
-
-  if (authBlocked) {
-    return (
-      <AppShell>
-        <Card>
-          <CardTitle>Authentication required</CardTitle>
-          <div className="mt-2">
-            <Muted>We could not start an anonymous session. Please retry.</Muted>
-          </div>
-          <div className="mt-4">
-            <Button onClick={() => setAuthRetryKey((v) => v + 1)}>Retry</Button>
-          </div>
-        </Card>
-      </AppShell>
-    );
-  }
+  }, [group, groupId, authBlocked, activeMemberId]);
 
   const inviteLink = useMemo(() => {
     if (typeof window === "undefined") return "";
     return `${window.location.origin}/g/${groupId}`;
   }, [groupId]);
-
-  const shouldHideInviteLink = Boolean(
-    group && !isHost && activeMember && !group.settings.allow_members_invite_link
-  );
 
   const stats = useMemo(() => {
     if (!ratings) {
@@ -421,6 +460,7 @@ export default function GroupHubPage() {
 
       setActiveMember(groupId, joined.member);
       setActiveMemberState(joined.member);
+      setMemberRemovedNotice(false);
       const refreshed = await getGroup(groupId);
       if (refreshed.group) {
         setGroup(refreshed.group);
@@ -436,14 +476,35 @@ export default function GroupHubPage() {
     if (activeMember?.id === member.id) return;
     if (!window.confirm(`Remove ${member.name} from this group?`)) return;
 
+    setMemberActionError("none");
     setIsRemovingMemberId(member.id);
     try {
-      await removeGroupMember(groupId, member.id);
+      const removed = await removeGroupMember(groupId, member.id);
+      if (removed.error !== "none") {
+        setMemberActionError(removed.error);
+        return;
+      }
       const refreshed = await listGroupMembers(groupId);
       setMembers(refreshed.members);
     } finally {
       setIsRemovingMemberId(null);
     }
+  }
+
+  if (authBlocked) {
+    return (
+      <AppShell>
+        <Card>
+          <CardTitle>Authentication required</CardTitle>
+          <div className="mt-2">
+            <Muted>We could not start an anonymous session. Please retry.</Muted>
+          </div>
+          <div className="mt-4">
+            <Button onClick={() => setAuthRetryKey((v) => v + 1)}>Retry</Button>
+          </div>
+        </Card>
+      </AppShell>
+    );
   }
 
   if (isLoadingGroup) {
@@ -519,85 +580,71 @@ export default function GroupHubPage() {
   return (
     <AppShell>
       <div className="space-y-6">
+        <div className="text-center">
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{group.name}</h1>
+        </div>
+
         <GroupTabs groupId={groupId} />
 
-        <Card>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">{group.name} ChooseAMovie Home</h1>
-              <div className="mt-1 text-sm text-white/60">
-                Share this invite so everyone can join your group and rate together.
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Pill>{contentLabel}</Pill>
-              <Pill>{modeLabel}</Pill>
-            </div>
+        {memberRemovedNotice ? (
+          <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+            You were removed from this group by the host. You can rejoin if invited again.
           </div>
+        ) : null}
 
-          <div className="mt-4 space-y-3">
-            {shouldHideInviteLink ? (
-              <div className="rounded-xl border border-white/12 bg-black/28 p-3 text-sm text-white/75">
-                Only hosts can share invites in this group.
+        {isHost ? (
+          <Card>
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle>Share invite link</CardTitle>
+              <div className="flex items-center gap-2">
+                <Pill>{contentLabel}</Pill>
+                <Pill>{modeLabel}</Pill>
               </div>
-            ) : (
+            </div>
+            <div className="mt-3 text-sm text-white/70">
+              Share this invite so everyone can join your group and rate together. Joinees will not need to
+              create an account to begin!
+            </div>
+            <div className="mt-3">
               <div className="rounded-xl border border-white/12 bg-black/28 p-3 text-sm text-white/90 break-all">
                 {inviteLink}
               </div>
-            )}
+            </div>
+            <div className="mt-3">
+              <Button
+                onClick={async () => {
+                  await navigator.clipboard.writeText(inviteLink);
+                }}
+              >
+                Copy invite link
+              </Button>
+            </div>
+          </Card>
+        ) : null}
 
-            <Muted>
-              {shouldHideInviteLink
-                ? "Ask the host if someone new needs to join."
-                : "Copy and send this link. Opening this URL is enough to join."}
-            </Muted>
-
-            {!shouldHideInviteLink ? (
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  onClick={async () => {
-                    await navigator.clipboard.writeText(inviteLink);
-                  }}
-                >
-                  Copy invite link
-                </Button>
-                <Button variant="secondary" onClick={() => router.push(`/g/${groupId}/results`)}>
-                  Results
-                </Button>
-              </div>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" onClick={() => router.push(`/g/${groupId}/results`)}>
-                  Results
-                </Button>
-              </div>
-            )}
-
-            {!isHost && !activeMember ? (
-              <div className="rounded-xl border border-white/12 bg-black/28 p-3">
-                <div className="text-sm font-semibold text-white">Join to participate</div>
-                <div className="mt-1 text-sm text-white/65">Enter your display name to join from this link.</div>
-                {joinError !== "none" ? (
-                  <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
-                    {joinErrorMessage(joinError)}
-                  </div>
-                ) : null}
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Input
-                    value={nameDraft}
-                    onChange={(e) => setNameDraft(e.target.value)}
-                    placeholder="Your name"
-                    autoComplete="off"
-                    className="min-w-[220px]"
-                  />
-                  <Button onClick={continueToRating} disabled={isJoining || nameDraft.trim().length < 2}>
-                    {isJoining ? "Joining..." : "Join and rate"}
-                  </Button>
-                </div>
+        {!isHost && !activeMember ? (
+          <Card>
+            <div className="text-sm font-semibold text-white">Join to participate</div>
+            <div className="mt-1 text-sm text-white/65">Enter your display name to join from this link.</div>
+            {joinError !== "none" ? (
+              <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+                {joinErrorMessage(joinError)}
               </div>
             ) : null}
-          </div>
-        </Card>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder="Your name"
+                autoComplete="off"
+                className="min-w-[220px]"
+              />
+              <Button onClick={continueToRating} disabled={isJoining || nameDraft.trim().length < 2}>
+                {isJoining ? "Joining..." : "Join and rate"}
+              </Button>
+            </div>
+          </Card>
+        ) : null}
 
         {isHost || activeMember ? (
           <div className="flex justify-center">
@@ -637,6 +684,13 @@ export default function GroupHubPage() {
 
           <Card>
             <CardTitle>Members</CardTitle>
+            {memberActionError !== "none" ? (
+              <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+                {memberActionError === "forbidden"
+                  ? "Could not remove this member. Host permissions are required."
+                  : "Network error while removing member. Please retry."}
+              </div>
+            ) : null}
             <div className="mt-3 space-y-2">
               {members.length === 0 ? (
                 <Muted>No members yet.</Muted>

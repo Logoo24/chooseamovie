@@ -23,8 +23,19 @@ function isNetworkLikeError(error: DbError | null | undefined) {
 
 function isForbiddenError(error: DbError | null | undefined) {
   if (!error) return false;
-  const text = `${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
-  return text.includes("permission denied") || text.includes("row-level security");
+  const text = `${error.code ?? ""} ${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return (
+    text.includes("permission denied") ||
+    text.includes("row-level security") ||
+    text.includes("forbidden") ||
+    text.includes("cannot_remove_host")
+  );
+}
+
+function isNotFoundError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.code ?? ""} ${error.message ?? ""} ${error.details ?? ""}`.toLowerCase();
+  return text.includes("member_not_found") || text.includes("not found");
 }
 
 function isInvalidJoinCodeError(error: DbError | null | undefined) {
@@ -202,6 +213,9 @@ export async function removeGroupMember(groupId: string, memberId: string): Prom
 
   const removed = await removeMember(groupId, memberId);
   if (removed.error) {
+    if (isNotFoundError(removed.error)) {
+      return { error: "none" };
+    }
     return { error: isForbiddenError(removed.error) ? "forbidden" : "network" };
   }
 

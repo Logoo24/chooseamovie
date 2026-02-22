@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import {
   errorJson,
+  guardTmdbProxyRequest,
   MissingTmdbTokenError,
   okJson,
   parseEnum,
@@ -96,6 +97,9 @@ function extractUsTvRating(
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await guardTmdbProxyRequest(request, "details.GET");
+  if (guard) return guard;
+
   const { searchParams } = request.nextUrl;
 
   const type = parseEnum(searchParams.get("type"), ["movie", "tv"] as const, "type");

@@ -488,15 +488,14 @@ export async function removeMember(groupId: string, memberId: string): Promise<D
   return runDbCall<null>(
     {
       operation: "removeMember",
-      table: "members",
+      rpc: "remove_group_member",
       payload: { groupId, memberId },
     },
     () =>
-      supabase!
-        .from("members")
-        .delete()
-        .eq("group_id", groupId)
-        .eq("id", memberId)
+      supabase!.rpc("remove_group_member", {
+        p_group_id: groupId,
+        p_member_id: memberId,
+      })
   );
 }
 

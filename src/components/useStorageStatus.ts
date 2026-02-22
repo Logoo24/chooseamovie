@@ -14,17 +14,20 @@ export function useStorageStatus() {
     let alive = true;
 
     if (!configured) {
-      setMode("offline");
       return () => {
         alive = false;
       };
     }
 
-    setMode("checking");
-    void checkSupabaseReachable().then((reachable) => {
-      if (!alive) return;
-      setMode(reachable ? "online" : "offline");
-    });
+    void checkSupabaseReachable()
+      .then((reachable) => {
+        if (!alive) return;
+        setMode(reachable ? "online" : "offline");
+      })
+      .catch(() => {
+        if (!alive) return;
+        setMode("offline");
+      });
 
     return () => {
       alive = false;

@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import {
   errorJson,
+  guardTmdbProxyRequest,
   MissingTmdbTokenError,
   okJson,
   parseEnum,
@@ -8,8 +9,6 @@ import {
 } from "@/app/api/tmdb/_shared";
 import { buildTmdbTitleKey } from "@/lib/tmdbTitleKey";
 
-type TrendingType = "all" | "movie" | "tv";
-type TrendingWindow = "day" | "week";
 type ResultType = "movie" | "tv";
 
 type TmdbTrendingItem = {
@@ -35,6 +34,9 @@ function extractYear(date?: string | null) {
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await guardTmdbProxyRequest(request, "trending.GET");
+  if (guard) return guard;
+
   const { searchParams } = request.nextUrl;
 
   const type = parseEnum(searchParams.get("type"), ["all", "movie", "tv"] as const, "type", "all");

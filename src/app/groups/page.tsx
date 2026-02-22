@@ -57,7 +57,6 @@ export default function GroupsPage() {
 
   useEffect(() => {
     let alive = true;
-    setIsLoading(true);
 
     (async () => {
       const remote = await getMyGroups();

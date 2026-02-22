@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import {
   errorJson,
+  guardTmdbProxyRequest,
   MissingTmdbTokenError,
   okJson,
   parseEnum,
@@ -9,8 +10,6 @@ import {
   validateLanguage,
 } from "@/app/api/tmdb/_shared";
 import { buildTmdbTitleKey } from "@/lib/tmdbTitleKey";
-
-type DiscoverType = "movie" | "tv";
 
 type TmdbDiscoverItem = {
   id: number;
@@ -96,6 +95,9 @@ function extractYear(raw?: string | null) {
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await guardTmdbProxyRequest(request, "discover.GET");
+  if (guard) return guard;
+
   const { searchParams } = request.nextUrl;
 
   const type = parseEnum(searchParams.get("type"), ["movie", "tv"] as const, "type");

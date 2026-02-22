@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import {
   errorJson,
+  guardTmdbProxyRequest,
   MissingTmdbTokenError,
   okJson,
   tmdbFetch,
@@ -52,6 +53,9 @@ function pickTopResult(results: TmdbSearchItem[] | undefined): TmdbSearchItem | 
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await guardTmdbProxyRequest(request, "landing-samples.GET");
+  if (guard) return guard;
+
   const language = validateLanguage(request.nextUrl.searchParams.get("language"));
   if (!language.ok) return language.response;
 

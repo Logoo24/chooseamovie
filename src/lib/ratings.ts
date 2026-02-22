@@ -32,6 +32,10 @@ export function setActiveMember(groupId: string, member: Member) {
   localStorage.setItem(KEY_MEMBER_ACTIVE(groupId), JSON.stringify(member));
 }
 
+export function clearActiveMember(groupId: string) {
+  localStorage.removeItem(KEY_MEMBER_ACTIVE(groupId));
+}
+
 export function listMembers(groupId: string): Member[] {
   const raw = localStorage.getItem(KEY_MEMBERS(groupId));
   if (!raw) return [];

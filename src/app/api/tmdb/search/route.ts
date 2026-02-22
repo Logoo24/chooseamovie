@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import {
   errorJson,
+  guardTmdbProxyRequest,
   MissingTmdbTokenError,
   okJson,
   parseEnum,
@@ -34,6 +35,9 @@ type TmdbSearchResponse = {
 };
 
 export async function GET(request: NextRequest) {
+  const guard = await guardTmdbProxyRequest(request, "search.GET");
+  if (guard) return guard;
+
   const { searchParams } = request.nextUrl;
 
   const q = parseRequiredString(searchParams.get("q"), "q");

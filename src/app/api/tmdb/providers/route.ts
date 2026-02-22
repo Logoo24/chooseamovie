@@ -1,14 +1,13 @@
 import { NextRequest } from "next/server";
 import {
   errorJson,
+  guardTmdbProxyRequest,
   MissingTmdbTokenError,
   okJson,
   parseEnum,
   parsePositiveInt,
   tmdbFetch,
 } from "@/app/api/tmdb/_shared";
-
-type TitleType = "movie" | "tv";
 
 type TmdbProvider = {
   provider_id: number;
@@ -36,6 +35,9 @@ function mapProvider(provider: TmdbProvider) {
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await guardTmdbProxyRequest(request, "providers.GET");
+  if (guard) return guard;
+
   const { searchParams } = request.nextUrl;
 
   const type = parseEnum(searchParams.get("type"), ["movie", "tv"] as const, "type");

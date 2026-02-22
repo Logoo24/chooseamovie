@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import {
   errorJson,
+  guardTmdbProxyRequest,
   MissingTmdbTokenError,
   okJson,
   parseEnum,
@@ -31,6 +32,9 @@ function normalizeGenres(raw: TmdbGenre[] | undefined) {
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await guardTmdbProxyRequest(request, "genres.GET");
+  if (guard) return guard;
+
   const { searchParams } = request.nextUrl;
 
   const type = parseEnum(searchParams.get("type"), ["movie", "tv"] as const, "type");
