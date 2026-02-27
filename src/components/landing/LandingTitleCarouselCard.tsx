@@ -103,10 +103,10 @@ const FALLBACK_TITLES: HeroCardTitle[] = [
   },
 ];
 
-const PRE_RATE_DELAY_MS = 3800;
-const POST_RATE_HOLD_MS = 1700;
-const TRANSITION_DURATION_MS = 500;
-const BOUNCE_DURATION_MS = 240;
+const PRE_RATE_DELAY_MS = 3200;
+const POST_RATE_HOLD_MS = 1300;
+const TRANSITION_DURATION_MS = 420;
+const BOUNCE_DURATION_MS = 190;
 
 let cachedTitles: HeroCardTitle[] | null = null;
 let inflightFetch: Promise<HeroCardTitle[]> | null = null;

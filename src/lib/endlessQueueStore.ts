@@ -71,36 +71,31 @@ type DiscoverState = {
   exhaustedByType: Record<TrendingType, boolean>;
 };
 
-function normalizeMpaa(certification: string | null | undefined): "G" | "PG" | "PG-13" | "R" | null {
+type NormalizedMovieRating = "G" | "PG" | "PG-13" | "R" | "__UNSUPPORTED__" | null;
+type NormalizedTvRating = "TV-Y" | "TV-Y7" | "TV-G" | "TV-PG" | "TV-14" | "TV-MA" | "__UNSUPPORTED__" | null;
+
+function normalizeMpaa(certification: string | null | undefined): NormalizedMovieRating {
   const raw = (certification ?? "").trim().toUpperCase();
   if (!raw) return null;
   if (raw === "PG13") return "PG-13";
   if (raw === "G" || raw === "PG" || raw === "PG-13" || raw === "R") return raw;
-  return null;
+  return "__UNSUPPORTED__";
 }
 
-function shouldFilterByMovieRating(settings: GroupSettings) {
-  return !(
-    settings.allowG &&
-    settings.allowPG &&
-    settings.allowPG13 &&
-    settings.allowR
-  );
+function shouldFilterByMovieRating() {
+  // Always enforce movie certification checks so fringe ratings such as NC-17
+  // and other non-mainstream/unsupported tags are excluded from the queue.
+  return true;
 }
 
-function shouldFilterByTvRating(settings: GroupSettings) {
-  return !(
-    settings.allowTVY &&
-    settings.allowTVY7 &&
-    settings.allowTVG &&
-    settings.allowTVPG &&
-    settings.allowTV14 &&
-    settings.allowTVMA
-  );
+function shouldFilterByTvRating() {
+  // Always enforce TV certification checks so unsupported ratings are excluded.
+  return true;
 }
 
-function isAllowedMovieRating(settings: GroupSettings, rating: "G" | "PG" | "PG-13" | "R" | null) {
+function isAllowedMovieRating(settings: GroupSettings, rating: NormalizedMovieRating) {
   if (!rating) return true;
+  if (rating === "__UNSUPPORTED__") return false;
   if (rating === "G") return settings.allowG;
   if (rating === "PG") return settings.allowPG;
   if (rating === "PG-13") return settings.allowPG13;
@@ -109,7 +104,7 @@ function isAllowedMovieRating(settings: GroupSettings, rating: "G" | "PG" | "PG-
 
 function normalizeTvRating(
   rating: string | null | undefined
-): "TV-Y" | "TV-Y7" | "TV-G" | "TV-PG" | "TV-14" | "TV-MA" | null {
+): NormalizedTvRating {
   const raw = (rating ?? "").trim().toUpperCase();
   if (!raw) return null;
   if (raw === "TVY") return "TV-Y";
@@ -128,14 +123,15 @@ function normalizeTvRating(
   ) {
     return raw;
   }
-  return null;
+  return "__UNSUPPORTED__";
 }
 
 function isAllowedTvRating(
   settings: GroupSettings,
-  rating: "TV-Y" | "TV-Y7" | "TV-G" | "TV-PG" | "TV-14" | "TV-MA" | null
+  rating: NormalizedTvRating
 ) {
   if (!rating) return true;
+  if (rating === "__UNSUPPORTED__") return false;
   if (rating === "TV-Y") return settings.allowTVY;
   if (rating === "TV-Y7") return settings.allowTVY7;
   if (rating === "TV-G") return settings.allowTVG;
@@ -144,7 +140,7 @@ function isAllowedTvRating(
   return settings.allowTVMA;
 }
 
-async function fetchMovieMpaaRating(tmdbId: number): Promise<"G" | "PG" | "PG-13" | "R" | null> {
+async function fetchMovieMpaaRating(tmdbId: number): Promise<NormalizedMovieRating> {
   if (movieMpaaById.has(tmdbId)) {
     return normalizeMpaa(movieMpaaById.get(tmdbId) ?? null);
   }
@@ -167,7 +163,7 @@ async function fetchMovieMpaaRating(tmdbId: number): Promise<"G" | "PG" | "PG-13
 
 async function fetchTvRating(
   tmdbId: number
-): Promise<"TV-Y" | "TV-Y7" | "TV-G" | "TV-PG" | "TV-14" | "TV-MA" | null> {
+): Promise<NormalizedTvRating> {
   if (tvRatingById.has(tmdbId)) {
     return normalizeTvRating(tvRatingById.get(tmdbId) ?? null);
   }
@@ -409,8 +405,8 @@ async function filterDiscoverRows(
   const byKey = new Map<string, EndlessQueueItem>();
   const enforceMovieRatings = shouldFilterByMovieRating(settings);
   const enforceTvRatings = shouldFilterByTvRating(settings);
-  let movieRatings = new Map<number, "G" | "PG" | "PG-13" | "R" | null>();
-  let tvRatings = new Map<number, "TV-Y" | "TV-Y7" | "TV-G" | "TV-PG" | "TV-14" | "TV-MA" | null>();
+  let movieRatings = new Map<number, NormalizedMovieRating>();
+  let tvRatings = new Map<number, NormalizedTvRating>();
 
   if (enforceMovieRatings) {
     const movieIds = Array.from(new Set(rows.filter((row) => row.type === "movie").map((row) => row.id)));

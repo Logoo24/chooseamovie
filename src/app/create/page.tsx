@@ -1,13 +1,16 @@
 "use client";
 
 import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
-import { Button, Card, CardTitle, Input, Muted, Pill } from "@/components/ui";
+import { Button, Card, CardTitle, Input, Muted } from "@/components/ui";
+import { getAuthSnapshot, subscribeAuthSnapshot, type AuthSnapshot } from "@/lib/authClient";
 import { createGroup } from "@/lib/groupStore";
 import { markHostForGroup } from "@/lib/hostStore";
 import { getHostDisplayName, setHostDisplayName } from "@/lib/hostProfileStore";
 import { createGroupId, getEndlessSettings, type GroupSettings } from "@/lib/storage";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
 type Step = 0 | 1 | 2;
 
@@ -39,6 +42,15 @@ function toYearBoundaryDate(yearValue: string, boundary: "start" | "end"): strin
 
 export default function CreateGroupPage() {
   const router = useRouter();
+  const [auth, setAuth] = useState<AuthSnapshot>({
+    userId: null,
+    email: null,
+    provider: null,
+    hasSession: false,
+    isAnonymous: false,
+  });
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const hasSupabaseAuth = isSupabaseConfigured();
 
   const placeholders = useMemo(
     () => ["Movie night", "Family movie night", "What should we watch?", "Roommates"],
@@ -78,6 +90,7 @@ export default function CreateGroupPage() {
   const [genreOptions, setGenreOptions] = useState<GenreOption[]>([]);
   const [isLoadingGenres, setIsLoadingGenres] = useState(false);
   const [genreLoadError, setGenreLoadError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const movieRatingOptions: Array<{
     key: "allowG" | "allowPG" | "allowPG13" | "allowR";
@@ -109,6 +122,25 @@ export default function CreateGroupPage() {
 
   useEffect(() => {
     let alive = true;
+    void getAuthSnapshot().then((snapshot) => {
+      if (!alive) return;
+      setAuth(snapshot);
+      setIsAuthReady(true);
+    });
+
+    const unsubscribe = subscribeAuthSnapshot((snapshot) => {
+      setAuth(snapshot);
+      setIsAuthReady(true);
+    });
+
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
     setIsLoadingGenres(true);
     setGenreLoadError(null);
 
@@ -126,7 +158,7 @@ export default function CreateGroupPage() {
 
         if (!movieResponse.ok && !tvResponse.ok) {
           setGenreOptions([]);
-          setGenreLoadError(movieBody.error?.message ?? tvBody.error?.message ?? "Could not load genres.");
+          setGenreLoadError(movieBody.error?.message ?? tvBody.error?.message ?? "Could not load genres right now.");
           return;
         }
 
@@ -154,7 +186,7 @@ export default function CreateGroupPage() {
       } catch {
         if (!alive) return;
         setGenreOptions([]);
-        setGenreLoadError("Could not load genres.");
+        setGenreLoadError("Could not load genres right now.");
       } finally {
         if (alive) setIsLoadingGenres(false);
       }
@@ -186,8 +218,37 @@ export default function CreateGroupPage() {
 
   const canGoStep2 = hostName.trim().length >= 2;
   const canGoStep3 = groupName.trim().length >= 2;
-  const canCreate = isCustomListMode ? true : hasAtLeastOneAllowedRating;
+  const hasSignedInHost = auth.hasSession && !auth.isAnonymous;
+  const canCreateWithSettings = isCustomListMode ? true : hasAtLeastOneAllowedRating;
+  const canCreate = canCreateWithSettings && (!hasSupabaseAuth || hasSignedInHost);
   const stepInsetClass = step === 0 ? "sm:pr-2" : step === 1 ? "sm:px-2" : "sm:pl-2";
+  const allMovieRatingsSelected = movieRatingOptions.every((opt) => settings[opt.key]);
+  const allTvRatingsSelected = tvRatingOptions.every((opt) => settings[opt.key]);
+
+  if (hasSupabaseAuth && !hasSignedInHost) {
+    return (
+      <div className="min-h-screen bg-[rgb(var(--bg))] px-4 py-8 text-[rgb(var(--text))] sm:px-6 sm:py-12">
+        <div className="mx-auto flex min-h-[80vh] w-full max-w-3xl items-center justify-center">
+          <div className="w-full rounded-2xl border border-white/12 bg-[rgb(var(--card))]/95 p-6 shadow-[0_24px_54px_rgba(0,0,0,0.45)] backdrop-blur sm:p-8">
+            <div className="text-center">
+              <h1 className="text-3xl font-semibold tracking-tight">Sign in to create a group</h1>
+              <div className="mx-auto mt-3 max-w-xl text-sm text-white/72">
+                Hosts need an account to create and manage groups. Guests can still join invite links without creating one.
+              </div>
+            </div>
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+              <Link href="/signin?next=%2Fcreate">
+                <Button>{isAuthReady ? "Create account or sign in" : "Checking account..."}</Button>
+              </Link>
+              <Link href="/">
+                <Button variant="secondary">Back home</Button>
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   function onCardKeyDown(event: KeyboardEvent<HTMLDivElement>, onActivate: () => void) {
     if (event.key === "Enter" || event.key === " ") {
@@ -214,6 +275,30 @@ export default function CreateGroupPage() {
     });
   }
 
+  function toggleAllMovieRatings() {
+    const nextValue = !allMovieRatingsSelected;
+    setSettings((s) => ({
+      ...s,
+      allowG: nextValue,
+      allowPG: nextValue,
+      allowPG13: nextValue,
+      allowR: nextValue,
+    }));
+  }
+
+  function toggleAllTvRatings() {
+    const nextValue = !allTvRatingsSelected;
+    setSettings((s) => ({
+      ...s,
+      allowTVY: nextValue,
+      allowTVY7: nextValue,
+      allowTVG: nextValue,
+      allowTVPG: nextValue,
+      allowTV14: nextValue,
+      allowTVMA: nextValue,
+    }));
+  }
+
   function goToNextStep() {
     if (step === 0 && !canGoStep2) return;
     if (step === 1 && !canGoStep3) return;
@@ -225,6 +310,7 @@ export default function CreateGroupPage() {
 
     const provisionalId = createGroupId();
     setIsCreating(true);
+    setCreateError(null);
     try {
       setHostDisplayName(hostName);
 
@@ -235,6 +321,11 @@ export default function CreateGroupPage() {
         schemaVersion: 1,
         settings,
       });
+
+      if (created.authFailed) {
+        setCreateError("Host account sign-in is required before creating a group.");
+        return;
+      }
 
       const groupId = created.group.id;
       markHostForGroup(groupId);
@@ -256,10 +347,9 @@ export default function CreateGroupPage() {
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Create a group</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Create group</h1>
             <div className="mt-1 text-sm text-white/60">Step {step + 1} of 3: {stepTitle}</div>
           </div>
-          <Pill>Setup wizard</Pill>
         </div>
 
         <div className="overflow-hidden rounded-2xl">
@@ -283,7 +373,7 @@ export default function CreateGroupPage() {
                       }
                     }}
                   />
-                  <Muted>This is your host display name. It stays on this device for now.</Muted>
+                  <Muted>This is the name people in your group will see.</Muted>
                   <div className="pt-2">
                     <Button onClick={goToNextStep} disabled={!canGoStep2}>
                       Continue
@@ -310,7 +400,7 @@ export default function CreateGroupPage() {
                       }
                     }}
                   />
-                  <Muted>Choose a clear name everyone will recognize.</Muted>
+                  <Muted>Pick a name your group will recognize.</Muted>
                   <div className="pt-2">
                     <Button onClick={goToNextStep} disabled={!canGoStep3}>
                       Continue
@@ -343,7 +433,7 @@ export default function CreateGroupPage() {
                     >
                       <div className="text-sm font-semibold">Endless mode</div>
                       <div className="mt-1 text-sm text-white/60">
-                        Keep rating options until your group is ready to pick.
+                        Keep rating titles until your group is ready to pick.
                       </div>
                     </div>
 
@@ -363,7 +453,7 @@ export default function CreateGroupPage() {
                     >
                       <div className="text-sm font-semibold">Custom list</div>
                       <div className="mt-1 text-sm text-white/60">
-                        Build a specific list of titles that everyone rates.
+                        Pick a fixed list of titles for everyone to rate.
                       </div>
                     </div>
                   </div>
@@ -440,7 +530,7 @@ export default function CreateGroupPage() {
                             <div>
                               <div className="text-sm font-semibold">Use release year range</div>
                               <div className="text-xs text-white/60">
-                                Limit endless picks to titles released between selected years.
+                                Only show titles released between these years.
                               </div>
                             </div>
                             <input
@@ -516,8 +606,7 @@ export default function CreateGroupPage() {
                             <div>
                               <div className="text-sm font-semibold">Filter out unpopular releases</div>
                               <div className="text-xs text-white/60">
-                                Filters out titles most people may not know yet, including very new
-                                low-vote releases.
+                                Hides low-vote titles so picks stay familiar.
                               </div>
                             </div>
                             <input
@@ -540,7 +629,12 @@ export default function CreateGroupPage() {
                       </Card>
 
                       <Card interactive={false}>
-                        <CardTitle>Allowed movie ratings</CardTitle>
+                        <div className="flex items-center justify-between gap-2">
+                          <CardTitle>Allowed movie ratings</CardTitle>
+                          <Button variant="ghost" onClick={toggleAllMovieRatings}>
+                            {allMovieRatingsSelected ? "Deselect all" : "Select all"}
+                          </Button>
+                        </div>
                         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
                           {movieRatingOptions.map((opt) => {
                             const checked = settings[opt.key];
@@ -570,9 +664,14 @@ export default function CreateGroupPage() {
 
                       {settings.contentType === "movies_and_shows" ? (
                         <Card interactive={false}>
-                          <CardTitle>Allowed TV ratings</CardTitle>
+                          <div className="flex items-center justify-between gap-2">
+                            <CardTitle>Allowed TV ratings</CardTitle>
+                            <Button variant="ghost" onClick={toggleAllTvRatings}>
+                              {allTvRatingsSelected ? "Deselect all" : "Select all"}
+                            </Button>
+                          </div>
                           <div className="mt-2 text-sm text-white/70">
-                            Used for TV title filtering when Movies + TV is selected.
+                            Applied when Movies + TV is selected.
                           </div>
                           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
                             {tvRatingOptions.map((opt) => {
@@ -611,7 +710,7 @@ export default function CreateGroupPage() {
                       <Card interactive={false}>
                         <CardTitle>Exclude genres</CardTitle>
                         <div className="mt-2 text-sm text-white/70">
-                          All genres are included by default. Select genres below to exclude them.
+                          All genres are included by default. Select any you want to exclude.
                         </div>
                         <div className="mt-3 flex flex-wrap items-center gap-2">
                           <Button
@@ -678,13 +777,13 @@ export default function CreateGroupPage() {
                       <Card interactive={false}>
                         <CardTitle>Streaming services</CardTitle>
                         <div className="mt-2">
-                          <Muted>Coming soon: filter by where your group can watch right now.</Muted>
+                          <Muted>Streaming service filters are coming soon.</Muted>
                         </div>
                       </Card>
                     </div>
                   ) : (
                     <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
-                      Filters are hidden in Custom list mode because you will pick the exact titles next.
+                      Filters are hidden in Custom list mode because you choose the exact titles next.
                     </div>
                   )}
                 </div>
@@ -692,6 +791,12 @@ export default function CreateGroupPage() {
             </div>
           </div>
         </div>
+
+        {createError ? (
+          <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+            {createError}
+          </div>
+        ) : null}
 
         <div className={stepInsetClass}>
           <Card interactive={false}>

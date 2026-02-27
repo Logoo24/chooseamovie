@@ -62,7 +62,13 @@ function isForbiddenLikeError(error: DbError | null | undefined) {
 function isAuthRequiredError(error: DbError | null | undefined) {
   if (!error) return false;
   const text = `${error.code ?? ""} ${error.message ?? ""}`.toLowerCase();
-  return text.includes("auth_required");
+  return text.includes("auth_required") || text.includes("not authenticated");
+}
+
+function isHostAccountRequiredError(error: DbError | null | undefined) {
+  if (!error) return false;
+  const text = `${error.code ?? ""} ${error.message ?? ""}`.toLowerCase();
+  return text.includes("host_account_required");
 }
 
 function mapDbGroupToLocal(data: {
@@ -113,8 +119,11 @@ export async function createGroup(group: Group): Promise<CreateGroupResult> {
     if (remote.status === 400) {
       markGroupsSchemaMismatch(remote.error);
     }
+    if (isAuthRequiredError(remote.error) || isHostAccountRequiredError(remote.error)) {
+      return { group: enrichedGroup, authFailed: true };
+    }
     saveGroup(enrichedGroup);
-    return { group: enrichedGroup, authFailed: isAuthRequiredError(remote.error) };
+    return { group: enrichedGroup, authFailed: false };
   }
 
   if (!remote.data) {

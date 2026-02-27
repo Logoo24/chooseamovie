@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
-import { GroupTabs } from "@/components/GroupTabs";
 import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
 import { Button, Card, CardTitle, Muted, Pill } from "@/components/ui";
@@ -184,14 +183,16 @@ function ResultCard({
               href={resolved.infoUrl}
               target="_blank"
               rel="noreferrer"
-              className="block truncate text-sm font-semibold text-white hover:underline"
+              className="block break-words text-sm font-semibold leading-snug text-white hover:underline"
             >
               {resolved.title}
             </a>
           ) : (
-            <div className="block truncate text-sm font-semibold text-white/70">{resolved.title}</div>
+            <div className="block break-words text-sm font-semibold leading-snug text-white/70">
+              {resolved.title}
+            </div>
           )}
-          <div className="mt-1 flex items-center gap-2 text-xs text-white/65">
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-white/65">
             <span>{resolved.year ?? (resolved.isResolved ? "Unknown year" : "Loading year...")}</span>
             {showMediaTypePill ? <Pill>{resolved.mediaType === "movie" ? "Movie" : "Show"}</Pill> : null}
           </div>
@@ -256,6 +257,7 @@ export default function ResultsPage() {
   const [perMemberRatings, setPerMemberRatings] = useState<Record<string, Record<string, number>>>({});
   const [topLimit, setTopLimit] = useState<(typeof TOP_LIMIT_OPTIONS)[number]>(10);
   const [topSortBy, setTopSortBy] = useState<TopSortBy>("total_stars");
+  const [onlyShowRatedByAll, setOnlyShowRatedByAll] = useState(false);
   const [showMemberRankings, setShowMemberRankings] = useState(false);
   const activeMemberId = activeMember?.id ?? null;
   const updatingTimerRef = useRef<number | null>(null);
@@ -411,6 +413,7 @@ export default function ResultsPage() {
   useEffect(() => {
     setTopLimit(10);
     setTopSortBy("total_stars");
+    setOnlyShowRatedByAll(false);
     setShowMemberRankings(false);
     setMemberRemovedByHost(false);
     setShortlistFallback({});
@@ -471,8 +474,15 @@ export default function ResultsPage() {
   }, [topRows, memberRatedTitleIds]);
 
   const allRanked = useMemo(() => {
+    const requiredRaterCount = members.length;
     const rows = topRows.filter((row) => row.votes > 0);
-    rows.sort((a, b) => {
+    const filteredRows =
+      onlyShowRatedByAll
+        ? requiredRaterCount > 0
+          ? rows.filter((row) => row.votes >= requiredRaterCount)
+          : []
+        : rows;
+    filteredRows.sort((a, b) => {
       if (topSortBy === "average") {
         if (b.avg !== a.avg) return b.avg - a.avg;
         if (b.totalStars !== a.totalStars) return b.totalStars - a.totalStars;
@@ -490,8 +500,8 @@ export default function ResultsPage() {
       if (b.votes !== a.votes) return b.votes - a.votes;
       return a.titleId.localeCompare(b.titleId);
     });
-    return rows;
-  }, [topRows, topSortBy]);
+    return filteredRows;
+  }, [members.length, onlyShowRatedByAll, topRows, topSortBy]);
 
   const top = useMemo(() => {
     return allRanked.slice(0, topLimit);
@@ -559,9 +569,9 @@ export default function ResultsPage() {
     return (
       <AppShell>
         <Card>
-          <CardTitle>Authentication required</CardTitle>
+          <CardTitle>Session required</CardTitle>
           <div className="mt-2">
-            <Muted>We could not start an anonymous session. Please retry.</Muted>
+            <Muted>We could not start your session. Please try again.</Muted>
           </div>
           <div className="mt-4">
             <Button onClick={() => setAuthRetryKey((v) => v + 1)}>Retry</Button>
@@ -576,8 +586,7 @@ export default function ResultsPage() {
       <AppShell>
         <StateCard
           title="Group not found"
-          badge="Check link"
-          description="This group does not exist on this device yet."
+          description="We couldn't find this group."
           actionHref="/create"
           actionLabel="Create a group"
         />
@@ -593,16 +602,15 @@ export default function ResultsPage() {
       <AppShell>
         <StateCard
           title="Join to see results"
-          badge="Members only"
           description={
             memberRemovedByHost
               ? "You were removed from this group by the host."
               : activeMember
-              ? "Your current profile does not have access to shared results for this group."
-              : "Join this group from Home first, then come back to results."
+                ? "Your current profile does not have access to shared results for this group."
+                : "Join this group from Home first, then come back to results."
           }
           actionHref={`/g/${groupId}`}
-          actionLabel="Go to Home"
+          actionLabel="Go to group home"
           actionVariant="secondary"
         />
       </AppShell>
@@ -614,10 +622,9 @@ export default function ResultsPage() {
       <AppShell>
         <StateCard
           title="Network error"
-          badge="Try again"
           description="We could not refresh shared results. Check your connection and reopen this page."
           actionHref={`/g/${groupId}`}
-          actionLabel="Back to Home"
+          actionLabel="Back to group home"
           actionVariant="secondary"
         />
       </AppShell>
@@ -627,16 +634,13 @@ export default function ResultsPage() {
   return (
     <AppShell>
       <div className="space-y-6">
-        <GroupTabs groupId={groupId} />
-
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <h1 className="truncate text-2xl font-semibold tracking-tight">Results</h1>
             <div className="mt-1 text-sm text-white/60">{group.name}</div>
           </div>
-          <div className="flex items-center gap-2">
-            <Pill>{members.length} member(s)</Pill>
-            <Pill>Live</Pill>
+          <div className="text-sm text-white/65">
+            {members.length} {members.length === 1 ? "member" : "members"} connected
           </div>
         </div>
 
@@ -644,6 +648,11 @@ export default function ResultsPage() {
           <CardTitle>Top picks</CardTitle>
           <div className="mt-2">
             <Muted>{topSortSummary} Skips are excluded.</Muted>
+            {onlyShowRatedByAll ? (
+              <div className="mt-1 text-sm text-white/65">
+                Showing only titles rated by all {members.length} {members.length === 1 ? "member" : "members"}.
+              </div>
+            ) : null}
             {isUpdating ? <div className="mt-1 text-sm text-white/55">Updating...</div> : null}
           </div>
 
@@ -661,6 +670,12 @@ export default function ResultsPage() {
                       Top {limit}
                     </Button>
                   ))}
+                  <Button
+                    variant={onlyShowRatedByAll ? "primary" : "secondary"}
+                    onClick={() => setOnlyShowRatedByAll((v) => !v)}
+                  >
+                    {onlyShowRatedByAll ? "Rated by everyone" : "Only rated by everyone"}
+                  </Button>
                 </div>
               </div>
 
@@ -700,7 +715,11 @@ export default function ResultsPage() {
                 <div className="h-24 animate-pulse rounded-xl bg-white/10" />
               </div>
             ) : resolvedTop.length === 0 ? (
-              <div className="py-2 text-sm text-white/70">No ratings yet. Go rate a few titles.</div>
+              <div className="py-2 text-sm text-white/70">
+                {onlyShowRatedByAll
+                  ? "No titles have been rated by everyone yet."
+                  : "No ratings yet. Go rate a few titles."}
+              </div>
             ) : (
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {resolvedTop.map((item, index) => (
@@ -762,4 +781,5 @@ export default function ResultsPage() {
     </AppShell>
   );
 }
+
 

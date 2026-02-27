@@ -107,6 +107,7 @@ export function passesGroupFilters(group: Group, title: Title) {
 
   const r = title.mpaa;
   if (!r) return true;
+  if (r !== "G" && r !== "PG" && r !== "PG-13" && r !== "R") return false;
 
   if (r === "G" && !group.settings.allowG) return false;
   if (r === "PG" && !group.settings.allowPG) return false;

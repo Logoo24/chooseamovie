@@ -364,8 +364,7 @@ export default function CustomListPage() {
       <AppShell>
         <StateCard
           title="Loading custom list"
-          badge="Please wait"
-          description="Checking your group and host access."
+          description="Loading group access and custom list."
         />
       </AppShell>
     );
@@ -375,9 +374,9 @@ export default function CustomListPage() {
     return (
       <AppShell>
         <Card>
-          <CardTitle>Authentication required</CardTitle>
+          <CardTitle>Session required</CardTitle>
           <div className="mt-2">
-            <Muted>We could not start an anonymous session. Please retry.</Muted>
+            <Muted>Couldn&apos;t start a guest session. Please try again.</Muted>
           </div>
           <div className="mt-4">
             <Button onClick={() => setAuthRetryKey((v) => v + 1)}>Retry</Button>
@@ -392,10 +391,9 @@ export default function CustomListPage() {
       <AppShell>
         <StateCard
           title="Group not found"
-          badge="Check link"
-          description="This group could not be found."
+          description="We couldn't find this group."
           actionHref="/create"
-          actionLabel="Create a group"
+          actionLabel="Create group"
         />
       </AppShell>
     );
@@ -406,8 +404,7 @@ export default function CustomListPage() {
       <AppShell>
         <StateCard
           title="Hosts only"
-          badge="Restricted"
-          description="Only the host can build or edit this custom list."
+          description="Only the host can edit this custom list."
           actionHref={`/g/${groupId}`}
           actionLabel="Back to hub"
           actionVariant="secondary"
@@ -421,8 +418,7 @@ export default function CustomListPage() {
       <AppShell>
         <StateCard
           title="Custom list mode is off"
-          badge="Mode"
-          description="Switch this group to Custom list mode before editing titles."
+          description="Enable Custom list mode before editing titles."
           actionHref={`/g/${groupId}`}
           actionLabel="Back to hub"
           actionVariant="secondary"
@@ -527,7 +523,7 @@ export default function CustomListPage() {
 
           {visibleResults.length === 0 && !isSearching ? (
             <div className="mt-3">
-              <Muted>{isTyping ? "No matches found." : "No suggestions yet."}</Muted>
+              <Muted>{isTyping ? "No matches found." : "No suggestions right now."}</Muted>
             </div>
           ) : (
             <div className="mt-3 space-y-2">
@@ -581,3 +577,4 @@ export default function CustomListPage() {
     </AppShell>
   );
 }
+

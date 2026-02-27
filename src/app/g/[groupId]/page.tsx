@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
-import { GroupTabs } from "@/components/GroupTabs";
 import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
 import { Button, Card, CardTitle, Input, Muted, Pill } from "@/components/ui";
@@ -20,6 +19,15 @@ import { getGroupRatings, type GroupRatingsResult } from "@/lib/ratingStore";
 import { clearActiveMember, getActiveMember, setActiveMember, type Member } from "@/lib/ratings";
 import { getShortlist, type ShortlistItem, type ShortlistSnapshot } from "@/lib/shortlistStore";
 import { ensureAuth, getAuthUserId } from "@/lib/api";
+import {
+  bootstrapSignedInProfile,
+  continueAsGuest,
+  getAuthSnapshot,
+  sendMagicLink,
+  signInWithGoogle,
+  subscribeAuthSnapshot,
+  type AuthSnapshot,
+} from "@/lib/authClient";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { getTitleSnapshots, type TitleSnapshot } from "@/lib/titleCacheStore";
 import { parseTmdbTitleKey } from "@/lib/tmdbTitleKey";
@@ -170,7 +178,7 @@ function joinErrorMessage(error: "none" | "invalid_code" | "auth_failed" | "netw
     return "Network issue while joining. Check your connection and try again.";
   }
   if (error === "unknown") {
-    return "Could not join this group right now. Please try again.";
+    return "Couldn’t join right now. Please try again.";
   }
   return "";
 }
@@ -204,6 +212,21 @@ export default function GroupHubPage() {
   const [memberActionError, setMemberActionError] = useState<"none" | "forbidden" | "network">("none");
   const [memberRemovedNotice, setMemberRemovedNotice] = useState(false);
   const activeMemberId = activeMember?.id ?? null;
+  const [authSnapshot, setAuthSnapshot] = useState<AuthSnapshot>({
+    userId: null,
+    email: null,
+    provider: null,
+    hasSession: false,
+    isAnonymous: false,
+  });
+  const [isAuthSnapshotReady, setIsAuthSnapshotReady] = useState(false);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPanelOpen, setAuthPanelOpen] = useState(false);
+  const [authActionError, setAuthActionError] = useState("");
+  const [isStartingGuest, setIsStartingGuest] = useState(false);
+  const [isSendingMagicLink, setIsSendingMagicLink] = useState(false);
+  const [isStartingGoogleAuth, setIsStartingGoogleAuth] = useState(false);
+  const joinNameDraftKey = `chooseamovie:join-name-draft:${groupId}`;
 
   useEffect(() => {
     let alive = true;
@@ -261,6 +284,45 @@ export default function GroupHubPage() {
       setMemberRemovedNotice(true);
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    let alive = true;
+    const persistedName = typeof window !== "undefined" ? sessionStorage.getItem(joinNameDraftKey) : null;
+    if (persistedName && persistedName.trim().length >= 2) {
+      setNameDraft(persistedName.trim());
+    }
+
+    void getAuthSnapshot().then((snapshot) => {
+      if (!alive) return;
+      setAuthSnapshot(snapshot);
+      setIsAuthSnapshotReady(true);
+      void bootstrapSignedInProfile();
+    });
+
+    const unsubscribe = subscribeAuthSnapshot((snapshot) => {
+      setAuthSnapshot(snapshot);
+      setIsAuthSnapshotReady(true);
+      setAuthActionError("");
+      if (!snapshot.isAnonymous) {
+        void bootstrapSignedInProfile();
+      }
+    });
+
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, [joinNameDraftKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const trimmed = nameDraft.trim();
+    if (!trimmed) {
+      sessionStorage.removeItem(joinNameDraftKey);
+      return;
+    }
+    sessionStorage.setItem(joinNameDraftKey, trimmed);
+  }, [nameDraft, joinNameDraftKey]);
 
   useEffect(() => {
     if (!group || authBlocked) return;
@@ -491,13 +553,59 @@ export default function GroupHubPage() {
     }
   }
 
+  async function continueAsGuestAndJoin() {
+    if (isStartingGuest || isJoining) return;
+    setAuthActionError("");
+    setIsStartingGuest(true);
+    try {
+      const started = await continueAsGuest();
+      if (!started.ok) {
+        setAuthActionError(started.error ?? "Could not start guest mode.");
+        return;
+      }
+      await continueToRating();
+    } finally {
+      setIsStartingGuest(false);
+    }
+  }
+
+  async function sendJoinMagicLink() {
+    if (isSendingMagicLink) return;
+    setAuthActionError("");
+    setIsSendingMagicLink(true);
+    try {
+      const redirectTo = `${window.location.origin}/g/${groupId}`;
+      const sent = await sendMagicLink(authEmail, redirectTo);
+      if (!sent.ok) {
+        setAuthActionError(sent.error ?? "Could not send sign-in email.");
+      }
+    } finally {
+      setIsSendingMagicLink(false);
+    }
+  }
+
+  async function startJoinGoogleSignIn() {
+    if (isStartingGoogleAuth) return;
+    setAuthActionError("");
+    setIsStartingGoogleAuth(true);
+    try {
+      const redirectTo = `${window.location.origin}/g/${groupId}`;
+      const started = await signInWithGoogle(redirectTo);
+      if (!started.ok) {
+        setAuthActionError(started.error ?? "Could not start Google sign-in.");
+      }
+    } finally {
+      setIsStartingGoogleAuth(false);
+    }
+  }
+
   if (authBlocked) {
     return (
       <AppShell>
         <Card>
-          <CardTitle>Authentication required</CardTitle>
+          <CardTitle>Session required</CardTitle>
           <div className="mt-2">
-            <Muted>We could not start an anonymous session. Please retry.</Muted>
+            <Muted>We could not start your session. Please try again.</Muted>
           </div>
           <div className="mt-4">
             <Button onClick={() => setAuthRetryKey((v) => v + 1)}>Retry</Button>
@@ -512,8 +620,7 @@ export default function GroupHubPage() {
       <AppShell>
         <StateCard
           title="Loading group home"
-          badge="Please wait"
-          description="Getting your group details ready."
+          description="Loading group details."
         />
       </AppShell>
     );
@@ -524,9 +631,12 @@ export default function GroupHubPage() {
       return (
         <AppShell>
           <Card>
-            <CardTitle>Join to participate</CardTitle>
+            <CardTitle>Join this group</CardTitle>
             <div className="mt-2">
-              <Muted>This link is the invite. Enter your display name to join this group.</Muted>
+              <Muted>
+                This link is the invite. Enter your name, then join as a guest or sign in to save your results to an
+                account.
+              </Muted>
             </div>
             {joinError !== "none" ? (
               <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
@@ -541,13 +651,77 @@ export default function GroupHubPage() {
                 autoComplete="off"
                 className="min-w-[220px]"
               />
-              <Button onClick={continueToRating} disabled={isJoining || nameDraft.trim().length < 2}>
-                {isJoining ? "Joining..." : "Join and rate"}
+              <Button onClick={continueAsGuestAndJoin} disabled={isJoining || isStartingGuest || nameDraft.trim().length < 2}>
+                {isJoining || isStartingGuest ? "Joining..." : "Continue as guest"}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setAuthPanelOpen((v) => !v)}
+                disabled={nameDraft.trim().length < 2}
+              >
+                {authPanelOpen ? "Hide sign-in options" : "Sign in to save progress"}
               </Button>
               <Button variant="secondary" onClick={() => router.push("/")}>
                 Back home
               </Button>
             </div>
+            {authPanelOpen ? (
+              <div className="mt-3 space-y-3 rounded-xl border border-white/12 bg-black/25 p-3">
+                {!isAuthSnapshotReady ? (
+                  <Muted>Checking session...</Muted>
+                ) : authSnapshot.hasSession && !authSnapshot.isAnonymous ? (
+                  <div className="space-y-2">
+                    <div className="text-sm text-white/75">
+                      Signed in{authSnapshot.email ? ` as ${authSnapshot.email}` : ""}. Join now to save results.
+                    </div>
+                    <Button onClick={continueToRating} disabled={isJoining || nameDraft.trim().length < 2}>
+                      {isJoining ? "Joining..." : "Join and save results"}
+                    </Button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="space-y-3 rounded-xl border border-white/12 bg-black/25 p-3">
+                      <div className="text-sm font-medium text-white/80">Create an account with email</div>
+                      <Input
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="Email"
+                        autoComplete="email"
+                        type="email"
+                      />
+                      <Button className="w-full" onClick={sendJoinMagicLink} disabled={isSendingMagicLink}>
+                        {isSendingMagicLink ? "Sending..." : "Continue with email"}
+                      </Button>
+                      <div className="flex items-center gap-3">
+                        <div className="h-px flex-1 bg-white/15" />
+                        <span className="text-xs uppercase tracking-[0.16em] text-white/55">or</span>
+                        <div className="h-px flex-1 bg-white/15" />
+                      </div>
+                      <Button
+                        className="w-full"
+                        variant="secondary"
+                        onClick={startJoinGoogleSignIn}
+                        disabled={isStartingGoogleAuth}
+                      >
+                        {isStartingGoogleAuth ? "Redirecting..." : "Sign in with Google"}
+                      </Button>
+                      <Button
+                        className="w-full"
+                        variant="ghost"
+                        onClick={() => router.push(`/signin?next=${encodeURIComponent(`/g/${groupId}`)}`)}
+                      >
+                        Use email + password
+                      </Button>
+                    </div>
+                  </>
+                )}
+                {authActionError ? (
+                  <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+                    {authActionError}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </Card>
         </AppShell>
       );
@@ -557,17 +731,16 @@ export default function GroupHubPage() {
       loadError === "network"
         ? "Network error"
         : loadError === "auth_failed"
-          ? "Authentication required"
+          ? "Session required"
           : "Group not found";
 
     return (
       <AppShell>
         <StateCard
           title={title}
-          badge="Try again"
-          description="We could not load this group right now."
+          description="We couldn't load this group right now."
           actionHref="/"
-          actionLabel="Back to Home"
+          actionLabel="Back home"
           actionVariant="secondary"
         />
       </AppShell>
@@ -576,6 +749,7 @@ export default function GroupHubPage() {
 
   const modeLabel = ratingModeLabel(group.settings);
   const contentLabel = group.settings.contentType === "movies" ? "Movies" : "Movies + Shows";
+  const inviteSummary = `${contentLabel} • ${modeLabel}`;
 
   return (
     <AppShell>
@@ -583,8 +757,6 @@ export default function GroupHubPage() {
         <div className="text-center">
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{group.name}</h1>
         </div>
-
-        <GroupTabs groupId={groupId} />
 
         {memberRemovedNotice ? (
           <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">
@@ -594,16 +766,10 @@ export default function GroupHubPage() {
 
         {isHost ? (
           <Card>
-            <div className="flex items-center justify-between gap-2">
-              <CardTitle>Share invite link</CardTitle>
-              <div className="flex items-center gap-2">
-                <Pill>{contentLabel}</Pill>
-                <Pill>{modeLabel}</Pill>
-              </div>
-            </div>
+            <CardTitle>Invite people</CardTitle>
+            <div className="mt-1 text-sm text-white/60">{inviteSummary}</div>
             <div className="mt-3 text-sm text-white/70">
-              Share this invite so everyone can join your group and rate together. Joinees will not need to
-              create an account to begin!
+              Share this link so people can join and start rating.
             </div>
             <div className="mt-3">
               <div className="rounded-xl border border-white/12 bg-black/28 p-3 text-sm text-white/90 break-all">
@@ -624,8 +790,10 @@ export default function GroupHubPage() {
 
         {!isHost && !activeMember ? (
           <Card>
-            <div className="text-sm font-semibold text-white">Join to participate</div>
-            <div className="mt-1 text-sm text-white/65">Enter your display name to join from this link.</div>
+            <div className="text-sm font-semibold text-white">Join this group</div>
+            <div className="mt-1 text-sm text-white/65">
+              Enter your name, then continue as guest or sign in to save progress.
+            </div>
             {joinError !== "none" ? (
               <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
                 {joinErrorMessage(joinError)}
@@ -639,10 +807,74 @@ export default function GroupHubPage() {
                 autoComplete="off"
                 className="min-w-[220px]"
               />
-              <Button onClick={continueToRating} disabled={isJoining || nameDraft.trim().length < 2}>
-                {isJoining ? "Joining..." : "Join and rate"}
+              <Button onClick={continueAsGuestAndJoin} disabled={isJoining || isStartingGuest || nameDraft.trim().length < 2}>
+                {isJoining || isStartingGuest ? "Joining..." : "Continue as guest"}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setAuthPanelOpen((v) => !v)}
+                disabled={nameDraft.trim().length < 2}
+              >
+                {authPanelOpen ? "Hide sign-in options" : "Sign in to save progress"}
               </Button>
             </div>
+            {authPanelOpen ? (
+              <div className="mt-3 space-y-3 rounded-xl border border-white/12 bg-black/25 p-3">
+                {!isAuthSnapshotReady ? (
+                  <Muted>Checking session...</Muted>
+                ) : authSnapshot.hasSession && !authSnapshot.isAnonymous ? (
+                  <div className="space-y-2">
+                    <div className="text-sm text-white/75">
+                      Signed in{authSnapshot.email ? ` as ${authSnapshot.email}` : ""}. Join now to save results.
+                    </div>
+                    <Button onClick={continueToRating} disabled={isJoining || nameDraft.trim().length < 2}>
+                      {isJoining ? "Joining..." : "Join and save results"}
+                    </Button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="space-y-3 rounded-xl border border-white/12 bg-black/25 p-3">
+                      <div className="text-sm font-medium text-white/80">Create an account with email</div>
+                      <Input
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="Email"
+                        autoComplete="email"
+                        type="email"
+                      />
+                      <Button className="w-full" onClick={sendJoinMagicLink} disabled={isSendingMagicLink}>
+                        {isSendingMagicLink ? "Sending..." : "Continue with email"}
+                      </Button>
+                      <div className="flex items-center gap-3">
+                        <div className="h-px flex-1 bg-white/15" />
+                        <span className="text-xs uppercase tracking-[0.16em] text-white/55">or</span>
+                        <div className="h-px flex-1 bg-white/15" />
+                      </div>
+                      <Button
+                        className="w-full"
+                        variant="secondary"
+                        onClick={startJoinGoogleSignIn}
+                        disabled={isStartingGoogleAuth}
+                      >
+                        {isStartingGoogleAuth ? "Redirecting..." : "Sign in with Google"}
+                      </Button>
+                      <Button
+                        className="w-full"
+                        variant="ghost"
+                        onClick={() => router.push(`/signin?next=${encodeURIComponent(`/g/${groupId}`)}`)}
+                      >
+                        Use email + password
+                      </Button>
+                    </div>
+                  </>
+                )}
+                {authActionError ? (
+                  <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+                    {authActionError}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </Card>
         ) : null}
 
@@ -658,7 +890,7 @@ export default function GroupHubPage() {
         ) : null}
 
         <div className="grid gap-4 xl:grid-cols-2">
-          <Card>
+          <Card className="order-4">
             <CardTitle>Group setup summary</CardTitle>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <div className="rounded-xl border border-white/12 bg-black/28 p-3">
@@ -682,18 +914,18 @@ export default function GroupHubPage() {
             </div>
           </Card>
 
-          <Card>
+          <Card className="order-1">
             <CardTitle>Members</CardTitle>
             {memberActionError !== "none" ? (
               <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
                 {memberActionError === "forbidden"
-                  ? "Could not remove this member. Host permissions are required."
-                  : "Network error while removing member. Please retry."}
+                  ? "You don’t have permission to remove this member."
+                  : "Network error while removing member. Please try again."}
               </div>
             ) : null}
             <div className="mt-3 space-y-2">
               {members.length === 0 ? (
-                <Muted>No members yet.</Muted>
+                <Muted>No one has joined yet.</Muted>
               ) : (
                 members.map((member) => (
                   <div
@@ -720,11 +952,11 @@ export default function GroupHubPage() {
           </Card>
 
           {isCustomListMode(group) ? (
-            <Card>
+            <Card className="order-5">
               <CardTitle>{customListLabel(group.settings.contentType)} preview</CardTitle>
               <div className="mt-3 space-y-1">
                 {group.settings.shortlistItems.length === 0 ? (
-                  <Muted>No items yet.</Muted>
+                  <Muted>No titles added yet.</Muted>
                 ) : (
                   group.settings.shortlistItems.slice(0, 8).map((item) => (
                     <div key={item} className="text-sm text-white/80">{item}</div>
@@ -741,7 +973,7 @@ export default function GroupHubPage() {
             </Card>
           ) : null}
 
-          <Card>
+          <Card className="order-3">
             <CardTitle>Stats</CardTitle>
             <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               <div className="rounded-xl border border-white/12 bg-black/28 p-3">
@@ -774,7 +1006,7 @@ export default function GroupHubPage() {
             </div>
           </Card>
 
-          <Card>
+          <Card className="order-2">
             <CardTitle>Results preview</CardTitle>
             <div className="mt-3 space-y-2">
               {topThree.length === 0 ? (
@@ -833,16 +1065,10 @@ export default function GroupHubPage() {
             </div>
           </Card>
 
-          <div className="pt-1 xl:col-span-2">
-            <a href="/create">
-              <Button variant="secondary" className="w-full sm:w-auto">
-                Create new group
-              </Button>
-            </a>
-          </div>
         </div>
       </div>
     </AppShell>
   );
 }
+
 

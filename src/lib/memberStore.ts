@@ -47,7 +47,7 @@ function isInvalidJoinCodeError(error: DbError | null | undefined) {
 function isAuthRequiredError(error: DbError | null | undefined) {
   if (!error) return false;
   const text = `${error.code ?? ""} ${error.message ?? ""}`.toLowerCase();
-  return text.includes("auth_required");
+  return text.includes("auth_required") || text.includes("not authenticated");
 }
 
 function toMember(row: { id: string; name: string; created_at?: string | null }): Member {

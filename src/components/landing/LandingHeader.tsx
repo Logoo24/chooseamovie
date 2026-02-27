@@ -2,7 +2,14 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { PopcornLogo } from "@/components/PopcornLogo";
+import Image from "next/image";
+import { UserMenu } from "@/components/UserMenu";
+import {
+  getAuthSnapshot,
+  signOutCurrentUser,
+  subscribeAuthSnapshot,
+  type AuthSnapshot,
+} from "@/lib/authClient";
 
 const navLinkClass =
   "rounded-md px-1 py-1 text-sm text-white/75 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/35";
@@ -11,6 +18,16 @@ const ctaClass =
 
 export function LandingHeader() {
   const [isScrolled, setIsScrolled] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [auth, setAuth] = useState<AuthSnapshot>({
+    userId: null,
+    email: null,
+    provider: null,
+    hasSession: false,
+    isAnonymous: false,
+    displayName: null,
+    firstName: null,
+  });
 
   useEffect(() => {
     const onScroll = () => {
@@ -20,6 +37,37 @@ export function LandingHeader() {
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    void getAuthSnapshot().then((snapshot) => {
+      if (!alive) return;
+      setAuth(snapshot);
+    });
+
+    const unsubscribe = subscribeAuthSnapshot((snapshot) => {
+      setAuth(snapshot);
+    });
+
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, []);
+
+  const isSignedIn = auth.hasSession && !auth.isAnonymous;
+  const accountLabel = auth.firstName ?? auth.displayName ?? "Account";
+
+  async function onSignOut() {
+    if (isSigningOut) return;
+    setIsSigningOut(true);
+    try {
+      await signOutCurrentUser();
+    } finally {
+      setIsSigningOut(false);
+    }
+  }
 
   return (
     <header
@@ -32,14 +80,7 @@ export function LandingHeader() {
     >
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <Link href="/" className="flex items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/35">
-          <PopcornLogo className="h-8 w-8" />
-          <div className="leading-tight">
-            <div className="text-base font-semibold tracking-tight">
-              <span className="text-white">Choose</span>
-              <span className="text-[rgb(var(--red))]">A</span>
-              <span className="text-white">Movie</span>
-            </div>
-          </div>
+          <Image src="/brand/logo-lockup.svg" alt="ChooseAMovie" width={262} height={56} priority className="h-9 w-auto sm:h-10" />
         </Link>
 
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2 sm:flex-nowrap sm:gap-4">
@@ -55,10 +96,21 @@ export function LandingHeader() {
                   About
                 </Link>
               </li>
+              {isSignedIn ? (
+                <li>
+                  <Link href="/groups" className={navLinkClass}>
+                    My groups
+                  </Link>
+                </li>
+              ) : null}
               <li>
-                <Link href="/signin" className={navLinkClass}>
-                  Sign in
-                </Link>
+                {isSignedIn ? (
+                  <UserMenu label={accountLabel} onSignOut={onSignOut} isSigningOut={isSigningOut} />
+                ) : (
+                  <Link href="/signin" className={navLinkClass}>
+                    Sign in
+                  </Link>
+                )}
               </li>
             </ul>
           </nav>

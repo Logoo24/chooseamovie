@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
-import { GroupTabs } from "@/components/GroupTabs";
 import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
 import { StarRating } from "@/components/StarRating";
@@ -608,8 +607,7 @@ export default function RatePage() {
     return (
       <AppShell>
         <StateCard
-          title="Loading rating flow"
-          badge="Please wait"
+          title="Loading ratings"
           description="Getting your group and member details ready."
         />
       </AppShell>
@@ -620,9 +618,9 @@ export default function RatePage() {
     return (
       <AppShell>
         <Card>
-          <CardTitle>Authentication required</CardTitle>
+          <CardTitle>Session required</CardTitle>
           <div className="mt-2">
-            <Muted>We could not start an anonymous session. Please retry.</Muted>
+            <Muted>We could not start your session. Please try again.</Muted>
           </div>
           <div className="mt-4">
             <Button onClick={() => setAuthRetryKey((v) => v + 1)}>Retry</Button>
@@ -637,8 +635,7 @@ export default function RatePage() {
       <AppShell>
         <StateCard
           title="Group not found"
-          badge="Check link"
-          description="This group does not exist on this device yet."
+          description="We couldn't find this group."
           actionHref="/create"
           actionLabel="Create a group"
         />
@@ -650,11 +647,10 @@ export default function RatePage() {
     return (
       <AppShell>
         <StateCard
-          title="Join from Home first"
-          badge="Members only"
-          description="Open group Home, join with your name, then return here to rate."
+          title="Join from group home first"
+          description="Open group home, join with your name, then come back here to rate."
           actionHref={`/g/${groupId}`}
-          actionLabel="Go to Home"
+          actionLabel="Go to group home"
           actionVariant="secondary"
         />
       </AppShell>
@@ -666,10 +662,9 @@ export default function RatePage() {
       <AppShell>
         <StateCard
           title="Opening group home"
-          badge="Please wait"
-          description="You need to join from Home before rating."
+          description="You need to join from group home before rating."
           actionHref={`/g/${groupId}`}
-          actionLabel="Go to Home"
+          actionLabel="Go to group home"
           actionVariant="secondary"
         />
       </AppShell>
@@ -681,7 +676,6 @@ export default function RatePage() {
       return (
         <AppShell>
           <div className="space-y-6">
-            <GroupTabs groupId={groupId} />
             <Card>
               <CardTitle>Finding more titles</CardTitle>
               <div className="mt-2">
@@ -696,7 +690,6 @@ export default function RatePage() {
     return (
       <AppShell>
         <div className="space-y-6">
-          <GroupTabs groupId={groupId} />
           <Card>
             <CardTitle>You are caught up</CardTitle>
             <div className="mt-2">
@@ -720,8 +713,6 @@ export default function RatePage() {
   return (
     <AppShell>
       <div className="space-y-4">
-        <GroupTabs groupId={groupId} />
-
         {isCustomListMode ? (
           <div className="flex justify-center">
             <Pill>{remainingCount} left</Pill>
@@ -853,3 +844,4 @@ export default function RatePage() {
     </AppShell>
   );
 }
+
