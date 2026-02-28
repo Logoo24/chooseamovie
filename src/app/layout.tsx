@@ -12,6 +12,9 @@ const manrope = Manrope({
 export const metadata: Metadata = {
   title: "ChooseAMovie",
   description: "Create a group, share a link, and rate movies together.",
+  verification: {
+    google: "NkT29ROai7BiN8x8nWiszWLsu75KMPdGPa0roB8lfTg",
+  },
   icons: {
     icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
   },
