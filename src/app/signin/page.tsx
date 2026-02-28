@@ -58,6 +58,7 @@ function SignInPageContent() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState("");
   const [isSubmittingEmailAuth, setIsSubmittingEmailAuth] = useState(false);
   const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
   const [authMessage, setAuthMessage] = useState("");
@@ -180,6 +181,7 @@ function SignInPageContent() {
     if (isSubmittingEmailAuth) return;
     setIsSubmittingEmailAuth(true);
     applyAuthMessage("", "info");
+    setPendingVerificationEmail("");
 
     try {
       const redirectTo = `${window.location.origin}/signin`;
@@ -198,7 +200,10 @@ function SignInPageContent() {
           return;
         }
         if (result.requiresEmailConfirmation) {
-          applyAuthMessage("Check your email to confirm your account, then sign in.", "success");
+          setPendingVerificationEmail(email.trim());
+          setAuthMode("signin");
+          setPassword("");
+          applyAuthMessage("Account created. Check your email for the verification link, then sign in.", "success");
           return;
         }
         applyAuthMessage("Account created. Signing you in...", "success");
@@ -399,6 +404,18 @@ function SignInPageContent() {
                     ].join(" ")}
                   >
                     {authMessage}
+                  </div>
+                ) : null}
+
+                {pendingVerificationEmail ? (
+                  <div className="mt-1 rounded-xl border border-emerald-400/40 bg-emerald-500/10 p-4 text-sm text-emerald-100">
+                    <div className="font-semibold text-white">Verify your email</div>
+                    <div className="mt-2">
+                      We sent a verification email to <span className="font-semibold text-white">{pendingVerificationEmail}</span>.
+                    </div>
+                    <div className="mt-2 text-emerald-50/90">
+                      Open that email, confirm your account, then return here and sign in with your email and password.
+                    </div>
                   </div>
                 ) : null}
               </>

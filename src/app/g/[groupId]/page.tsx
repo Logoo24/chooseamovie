@@ -36,6 +36,12 @@ import { getGroupTopTitles, type GroupTopTitle } from "@/lib/topTitlesStore";
 import { TITLES } from "@/lib/titles";
 import { type Group } from "@/lib/storage";
 
+function getKnownAccountName(auth: AuthSnapshot) {
+  const displayName = auth.displayName?.trim() ?? "";
+  if (displayName) return displayName;
+  return null;
+}
+
 function ratingLabel(group: Group) {
   const allowedMovieRatings: string[] = [];
   if (group.settings.allowG) allowedMovieRatings.push("G");
@@ -229,6 +235,9 @@ export default function GroupHubPage() {
   const [isStartingGoogleAuth, setIsStartingGoogleAuth] = useState(false);
   const [isPreparingQueue, setIsPreparingQueue] = useState(false);
   const joinNameDraftKey = `chooseamovie:join-name-draft:${groupId}`;
+  const knownAccountName = getKnownAccountName(authSnapshot);
+  const canUseKnownAccountName =
+    Boolean(knownAccountName) && authSnapshot.hasSession && !authSnapshot.isAnonymous && !activeMember;
 
   useEffect(() => {
     let alive = true;
@@ -298,6 +307,10 @@ export default function GroupHubPage() {
       if (!alive) return;
       setAuthSnapshot(snapshot);
       setIsAuthSnapshotReady(true);
+      const accountName = getKnownAccountName(snapshot);
+      if (accountName) {
+        setNameDraft((current) => current.trim() || accountName);
+      }
       void bootstrapSignedInProfile();
     });
 
@@ -305,6 +318,10 @@ export default function GroupHubPage() {
       setAuthSnapshot(snapshot);
       setIsAuthSnapshotReady(true);
       setAuthActionError("");
+      const accountName = getKnownAccountName(snapshot);
+      if (accountName) {
+        setNameDraft((current) => current.trim() || accountName);
+      }
       if (!snapshot.isAnonymous) {
         void bootstrapSignedInProfile();
       }
@@ -522,7 +539,7 @@ export default function GroupHubPage() {
   }, [topThree]);
 
   async function continueToRating() {
-    const trimmed = nameDraft.trim();
+    const trimmed = nameDraft.trim() || knownAccountName || "";
     if (trimmed.length < 2) return;
 
     setJoinError("none");
@@ -660,8 +677,9 @@ export default function GroupHubPage() {
             <CardTitle>Join this group</CardTitle>
             <div className="mt-2">
               <Muted>
-                This link is the invite. Enter your name, then join as a guest or sign in to save your results to an
-                account.
+                {canUseKnownAccountName
+                  ? `This link is the invite. We'll use ${knownAccountName} from your account when you join.`
+                  : "This link is the invite. Enter your name, then join as a guest or sign in to save your results to an account."}
               </Muted>
             </div>
             {joinError !== "none" ? (
@@ -670,23 +688,39 @@ export default function GroupHubPage() {
               </div>
             ) : null}
             <div className="mt-3 flex flex-wrap gap-2">
-              <Input
-                value={nameDraft}
-                onChange={(e) => setNameDraft(e.target.value)}
-                placeholder="Your name"
-                autoComplete="off"
-                className="min-w-[220px]"
-              />
-              <Button onClick={continueAsGuestAndJoin} disabled={isJoining || isStartingGuest || nameDraft.trim().length < 2}>
-                {isJoining || isStartingGuest ? "Joining..." : "Continue as guest"}
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => setAuthPanelOpen((v) => !v)}
-                disabled={nameDraft.trim().length < 2}
-              >
-                {authPanelOpen ? "Hide sign-in options" : "Sign in to save progress"}
-              </Button>
+              {canUseKnownAccountName ? (
+                <>
+                  <div className="min-w-[220px] rounded-xl border border-white/12 bg-black/28 px-3 py-2.5 text-sm text-white/85">
+                    Joining as {knownAccountName}
+                  </div>
+                  <Button onClick={continueToRating} disabled={isJoining}>
+                    {isJoining ? "Joining..." : "Join and save results"}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Input
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    placeholder="Your name"
+                    autoComplete="off"
+                    className="min-w-[220px]"
+                  />
+                  <Button
+                    onClick={continueAsGuestAndJoin}
+                    disabled={isJoining || isStartingGuest || nameDraft.trim().length < 2}
+                  >
+                    {isJoining || isStartingGuest ? "Joining..." : "Continue as guest"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setAuthPanelOpen((v) => !v)}
+                    disabled={nameDraft.trim().length < 2}
+                  >
+                    {authPanelOpen ? "Hide sign-in options" : "Sign in to save progress"}
+                  </Button>
+                </>
+              )}
               <Button variant="secondary" onClick={() => router.push("/")}>
                 Back home
               </Button>
@@ -698,9 +732,12 @@ export default function GroupHubPage() {
                 ) : authSnapshot.hasSession && !authSnapshot.isAnonymous ? (
                   <div className="space-y-2">
                     <div className="text-sm text-white/75">
-                      Signed in{authSnapshot.email ? ` as ${authSnapshot.email}` : ""}. Join now to save results.
+                      Signed in{authSnapshot.email ? ` as ${authSnapshot.email}` : ""}. {knownAccountName ? `We'll use ${knownAccountName} as your name.` : "Join now to save results."}
                     </div>
-                    <Button onClick={continueToRating} disabled={isJoining || nameDraft.trim().length < 2}>
+                    <Button
+                      onClick={continueToRating}
+                      disabled={isJoining || (!knownAccountName && nameDraft.trim().length < 2)}
+                    >
                       {isJoining ? "Joining..." : "Join and save results"}
                     </Button>
                   </div>
@@ -818,7 +855,9 @@ export default function GroupHubPage() {
           <Card>
             <div className="text-sm font-semibold text-white">Join this group</div>
             <div className="mt-1 text-sm text-white/65">
-              Enter your name, then continue as guest or sign in to save progress.
+              {canUseKnownAccountName
+                ? `We'll use ${knownAccountName} from your account when you join.`
+                : "Enter your name, then continue as guest or sign in to save progress."}
             </div>
             {joinError !== "none" ? (
               <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
@@ -826,23 +865,39 @@ export default function GroupHubPage() {
               </div>
             ) : null}
             <div className="mt-2 flex flex-wrap gap-2">
-              <Input
-                value={nameDraft}
-                onChange={(e) => setNameDraft(e.target.value)}
-                placeholder="Your name"
-                autoComplete="off"
-                className="min-w-[220px]"
-              />
-              <Button onClick={continueAsGuestAndJoin} disabled={isJoining || isStartingGuest || nameDraft.trim().length < 2}>
-                {isJoining || isStartingGuest ? "Joining..." : "Continue as guest"}
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => setAuthPanelOpen((v) => !v)}
-                disabled={nameDraft.trim().length < 2}
-              >
-                {authPanelOpen ? "Hide sign-in options" : "Sign in to save progress"}
-              </Button>
+              {canUseKnownAccountName ? (
+                <>
+                  <div className="min-w-[220px] rounded-xl border border-white/12 bg-black/28 px-3 py-2.5 text-sm text-white/85">
+                    Joining as {knownAccountName}
+                  </div>
+                  <Button onClick={continueToRating} disabled={isJoining}>
+                    {isJoining ? "Joining..." : "Join and save results"}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Input
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    placeholder="Your name"
+                    autoComplete="off"
+                    className="min-w-[220px]"
+                  />
+                  <Button
+                    onClick={continueAsGuestAndJoin}
+                    disabled={isJoining || isStartingGuest || nameDraft.trim().length < 2}
+                  >
+                    {isJoining || isStartingGuest ? "Joining..." : "Continue as guest"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setAuthPanelOpen((v) => !v)}
+                    disabled={nameDraft.trim().length < 2}
+                  >
+                    {authPanelOpen ? "Hide sign-in options" : "Sign in to save progress"}
+                  </Button>
+                </>
+              )}
             </div>
             {authPanelOpen ? (
               <div className="mt-3 space-y-3 rounded-xl border border-white/12 bg-black/25 p-3">
@@ -851,9 +906,12 @@ export default function GroupHubPage() {
                 ) : authSnapshot.hasSession && !authSnapshot.isAnonymous ? (
                   <div className="space-y-2">
                     <div className="text-sm text-white/75">
-                      Signed in{authSnapshot.email ? ` as ${authSnapshot.email}` : ""}. Join now to save results.
+                      Signed in{authSnapshot.email ? ` as ${authSnapshot.email}` : ""}. {knownAccountName ? `We'll use ${knownAccountName} as your name.` : "Join now to save results."}
                     </div>
-                    <Button onClick={continueToRating} disabled={isJoining || nameDraft.trim().length < 2}>
+                    <Button
+                      onClick={continueToRating}
+                      disabled={isJoining || (!knownAccountName && nameDraft.trim().length < 2)}
+                    >
                       {isJoining ? "Joining..." : "Join and save results"}
                     </Button>
                   </div>

@@ -27,6 +27,12 @@ type GenreListResponse = {
 const YEAR_PATTERN = /^\d{4}$/;
 const DATE_RANGE_DEFAULT_FROM_YEAR = 2000;
 
+function getKnownAccountName(auth: AuthSnapshot) {
+  const displayName = auth.displayName?.trim() ?? "";
+  if (displayName) return displayName;
+  return null;
+}
+
 function extractYear(value: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim();
@@ -138,6 +144,22 @@ export default function CreateGroupPage() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAuthReady) return;
+    const accountName = getKnownAccountName(auth);
+    if (!accountName) return;
+
+    setHostName((current) => {
+      const trimmedCurrent = current.trim();
+      if (trimmedCurrent.length > 0 && trimmedCurrent !== getHostDisplayName().trim()) {
+        return current;
+      }
+      return accountName;
+    });
+    setHostDisplayName(accountName);
+    setStep((current) => (current === 0 ? 1 : current));
+  }, [auth, isAuthReady]);
 
   useEffect(() => {
     let alive = true;
@@ -340,6 +362,9 @@ export default function CreateGroupPage() {
     }
   }
 
+  const accountName = getKnownAccountName(auth);
+  const totalSteps = accountName ? 2 : 3;
+  const visibleStepNumber = accountName ? Math.max(1, step) : step + 1;
   const stepTitle = step === 0 ? "Your name" : step === 1 ? "Name your group" : "Set up your chooser";
 
   return (
@@ -348,7 +373,9 @@ export default function CreateGroupPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Create group</h1>
-            <div className="mt-1 text-sm text-white/60">Step {step + 1} of 3: {stepTitle}</div>
+            <div className="mt-1 text-sm text-white/60">
+              Step {visibleStepNumber} of {totalSteps}: {stepTitle}
+            </div>
           </div>
         </div>
 
