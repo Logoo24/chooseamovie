@@ -61,7 +61,10 @@ export default function Home() {
           />
           <div className="mx-auto max-w-6xl px-4 pb-16 pt-20 sm:px-6 sm:pb-20 sm:pt-24">
             <Reveal className="mx-auto max-w-3xl text-center">
-              <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-6xl">
+              <div className="text-sm font-semibold uppercase tracking-[0.28em] text-[rgb(var(--red))] sm:text-base">
+                ChooseAMovie
+              </div>
+              <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl lg:text-5xl">
                 Pick a movie together in minutes.
               </h1>
               <p className="mx-auto mt-5 max-w-2xl text-base text-white/75 sm:text-lg">
