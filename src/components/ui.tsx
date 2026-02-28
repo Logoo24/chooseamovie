@@ -34,6 +34,22 @@ export function Muted({ children }: { children: React.ReactNode }) {
   return <div className="text-sm leading-relaxed text-white/68">{children}</div>;
 }
 
+export function LoadingSpinner({
+  className = "h-4 w-4",
+}: {
+  className?: string;
+}) {
+  return (
+    <span
+      aria-hidden="true"
+      className={[
+        "inline-block animate-spin rounded-full border-2 border-white/20 border-t-white",
+        className,
+      ].join(" ")}
+    />
+  );
+}
+
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input

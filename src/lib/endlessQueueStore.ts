@@ -25,6 +25,7 @@ const MAX_SEEN = 300;
 const noDiscoverResultsHintShownForGroup = new Set<string>();
 const movieMpaaById = new Map<number, string | null>();
 const tvRatingById = new Map<number, string | null>();
+const queueRequestByMember = new Map<string, Promise<EndlessQueueItem[]>>();
 
 type TrendingType = "movie" | "tv";
 
@@ -580,46 +581,59 @@ export async function ensureEndlessQueue(
   memberId: string,
   settings: GroupSettings
 ): Promise<EndlessQueueItem[]> {
-  const persisted = loadGroup(groupId);
-  const effectiveSettings = persisted
-    ? persisted.settings
-    : normalizeGroupSettings(settings);
+  const requestKey = `${groupId}:${memberId}`;
+  const inFlightRequest = queueRequestByMember.get(requestKey);
+  if (inFlightRequest) {
+    return inFlightRequest;
+  }
 
-  const seen = new Set(loadSeen(groupId, memberId));
-  const ratedLocal = localRatedTitleKeys(groupId, memberId);
-  let rated = new Set(ratedLocal);
+  const request = (async () => {
+    const persisted = loadGroup(groupId);
+    const effectiveSettings = persisted
+      ? persisted.settings
+      : normalizeGroupSettings(settings);
 
-  const dedupedUpcoming = loadUpcoming(groupId, memberId).filter((item) => {
-    return !seen.has(item.title_id) && !rated.has(item.title_id);
+    const seen = new Set(loadSeen(groupId, memberId));
+    const ratedLocal = localRatedTitleKeys(groupId, memberId);
+    let rated = new Set(ratedLocal);
+
+    const dedupedUpcoming = loadUpcoming(groupId, memberId).filter((item) => {
+      return !seen.has(item.title_id) && !rated.has(item.title_id);
+    });
+
+    if (dedupedUpcoming.length >= LOW_WATERMARK) {
+      saveUpcoming(groupId, memberId, dedupedUpcoming);
+      return dedupedUpcoming;
+    }
+
+    // Only ask remote ratings when the queue is low; this avoids repeated network
+    // round-trips during normal rating flow.
+    const ratedRemote = await remoteRatedTitleKeys(groupId, memberId);
+    rated = new Set([...ratedLocal, ...ratedRemote]);
+    const remoteDedupedUpcoming = dedupedUpcoming.filter((item) => !ratedRemote.has(item.title_id));
+
+    if (remoteDedupedUpcoming.length >= LOW_WATERMARK) {
+      saveUpcoming(groupId, memberId, remoteDedupedUpcoming);
+      return remoteDedupedUpcoming;
+    }
+
+    const next = await refillUpcomingQueue(
+      groupId,
+      memberId,
+      effectiveSettings,
+      remoteDedupedUpcoming,
+      seen,
+      rated
+    );
+
+    saveUpcoming(groupId, memberId, next);
+    return next;
+  })().finally(() => {
+    queueRequestByMember.delete(requestKey);
   });
 
-  if (dedupedUpcoming.length >= LOW_WATERMARK) {
-    saveUpcoming(groupId, memberId, dedupedUpcoming);
-    return dedupedUpcoming;
-  }
-
-  // Only ask remote ratings when the queue is low; this avoids repeated network
-  // round-trips during normal rating flow.
-  const ratedRemote = await remoteRatedTitleKeys(groupId, memberId);
-  rated = new Set([...ratedLocal, ...ratedRemote]);
-  const remoteDedupedUpcoming = dedupedUpcoming.filter((item) => !ratedRemote.has(item.title_id));
-
-  if (remoteDedupedUpcoming.length >= LOW_WATERMARK) {
-    saveUpcoming(groupId, memberId, remoteDedupedUpcoming);
-    return remoteDedupedUpcoming;
-  }
-
-  const next = await refillUpcomingQueue(
-    groupId,
-    memberId,
-    effectiveSettings,
-    remoteDedupedUpcoming,
-    seen,
-    rated
-  );
-
-  saveUpcoming(groupId, memberId, next);
-  return next;
+  queueRequestByMember.set(requestKey, request);
+  return request;
 }
 
 export function consumeUpcomingTitle(groupId: string, memberId: string, titleId: string) {

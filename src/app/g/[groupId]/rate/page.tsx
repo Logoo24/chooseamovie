@@ -7,7 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
 import { StarRating } from "@/components/StarRating";
-import { Button, Card, CardTitle, Muted, Pill } from "@/components/ui";
+import { Button, Card, CardTitle, LoadingSpinner, Muted, Pill } from "@/components/ui";
 import {
   consumeUpcomingTitle,
   ensureEndlessQueue,
@@ -672,14 +672,31 @@ export default function RatePage() {
   }
 
   if (!currentTitle) {
+    if (!isCustomListMode && isRefreshingQueue) {
+      return (
+        <AppShell>
+          <div className="space-y-6">
+            <Card>
+              <CardTitle>Loading titles</CardTitle>
+              <div className="mt-2 inline-flex items-center gap-2 text-sm text-white/68">
+                <LoadingSpinner className="h-4 w-4" />
+                <span>Getting titles ready for rating.</span>
+              </div>
+            </Card>
+          </div>
+        </AppShell>
+      );
+    }
+
     if (!isCustomListMode && isCheckingMoreTitles) {
       return (
         <AppShell>
           <div className="space-y-6">
             <Card>
               <CardTitle>Finding more titles</CardTitle>
-              <div className="mt-2">
-                <Muted>Checking more pages that match your group filters.</Muted>
+              <div className="mt-2 inline-flex items-center gap-2 text-sm text-white/68">
+                <LoadingSpinner className="h-4 w-4" />
+                <span>Checking more pages that match your group filters.</span>
               </div>
             </Card>
           </div>
@@ -727,7 +744,12 @@ export default function RatePage() {
               className="mx-auto w-full max-w-[176px] rounded-xl sm:max-w-[220px] md:max-w-[260px]"
               roundedClassName="rounded-xl"
             />
-            {isRefreshingQueue ? <div className="mt-2 text-xs text-white/55">Updating queue...</div> : null}
+            {isRefreshingQueue ? (
+              <div className="mt-2 inline-flex items-center gap-2 text-xs text-white/55">
+                <LoadingSpinner className="h-3.5 w-3.5" />
+                <span>Updating queue...</span>
+              </div>
+            ) : null}
           </Card>
 
           <div className="space-y-4">

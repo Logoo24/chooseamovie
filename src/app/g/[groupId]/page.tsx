@@ -5,8 +5,9 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { PosterImage } from "@/components/PosterImage";
 import { StateCard } from "@/components/StateCard";
-import { Button, Card, CardTitle, Input, Muted, Pill } from "@/components/ui";
+import { Button, Card, CardTitle, Input, LoadingSpinner, Muted, Pill } from "@/components/ui";
 import { customListLabel, isCustomListMode, ratingModeLabel } from "@/lib/groupLabels";
+import { ensureEndlessQueue } from "@/lib/endlessQueueStore";
 import { getGroup } from "@/lib/groupStore";
 import { isHostForGroup } from "@/lib/hostStore";
 import {
@@ -226,6 +227,7 @@ export default function GroupHubPage() {
   const [isStartingGuest, setIsStartingGuest] = useState(false);
   const [isSendingMagicLink, setIsSendingMagicLink] = useState(false);
   const [isStartingGoogleAuth, setIsStartingGoogleAuth] = useState(false);
+  const [isPreparingQueue, setIsPreparingQueue] = useState(false);
   const joinNameDraftKey = `chooseamovie:join-name-draft:${groupId}`;
 
   useEffect(() => {
@@ -323,6 +325,25 @@ export default function GroupHubPage() {
     }
     sessionStorage.setItem(joinNameDraftKey, trimmed);
   }, [nameDraft, joinNameDraftKey]);
+
+  useEffect(() => {
+    if (!group || !activeMember || group.settings.ratingMode === "shortlist") {
+      setIsPreparingQueue(false);
+      return;
+    }
+
+    let alive = true;
+    setIsPreparingQueue(true);
+
+    void ensureEndlessQueue(groupId, activeMember.id, group.settings).finally(() => {
+      if (!alive) return;
+      setIsPreparingQueue(false);
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [activeMember, group, groupId]);
 
   useEffect(() => {
     if (!group || authBlocked) return;
@@ -526,6 +547,11 @@ export default function GroupHubPage() {
       const refreshed = await getGroup(groupId);
       if (refreshed.group) {
         setGroup(refreshed.group);
+        if (refreshed.group.settings.ratingMode !== "shortlist") {
+          void ensureEndlessQueue(groupId, joined.member.id, refreshed.group.settings);
+        }
+      } else if (group && group.settings.ratingMode !== "shortlist") {
+        void ensureEndlessQueue(groupId, joined.member.id, group.settings);
       }
       router.push(`/g/${groupId}/rate`);
     } finally {
@@ -879,13 +905,19 @@ export default function GroupHubPage() {
         ) : null}
 
         {isHost || activeMember ? (
-          <div className="flex justify-center">
+          <div className="flex flex-col items-center gap-2">
             <Button
               className="w-auto bg-[rgb(var(--card-2))] px-8 py-3 text-base text-white transition-all duration-200 hover:bg-[rgb(var(--yellow))] hover:text-black active:scale-[0.98]"
               onClick={() => router.push(`/g/${groupId}/rate`)}
             >
               Start rating
             </Button>
+            {group.settings.ratingMode !== "shortlist" && isPreparingQueue ? (
+              <div className="inline-flex items-center gap-2 text-sm text-white/68">
+                <LoadingSpinner className="h-4 w-4" />
+                <span>Getting titles ready for rating...</span>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
