@@ -105,7 +105,12 @@ export function LandingHeader() {
               ) : null}
               <li>
                 {isSignedIn ? (
-                  <UserMenu label={accountLabel} onSignOut={onSignOut} isSigningOut={isSigningOut} />
+                  <UserMenu
+                    label={accountLabel}
+                    onSignOut={onSignOut}
+                    isSigningOut={isSigningOut}
+                    triggerClassName="inline-flex items-center justify-center rounded-md px-1 py-1 text-sm leading-none text-white/75 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/35"
+                  />
                 ) : (
                   <Link href="/signin" className={navLinkClass}>
                     Sign in

@@ -690,7 +690,7 @@ export default function GroupHubPage() {
             <div className="mt-3 flex flex-wrap gap-2">
               {canUseKnownAccountName ? (
                 <>
-                  <div className="min-w-[220px] rounded-xl border border-white/12 bg-black/28 px-3 py-2.5 text-sm text-white/85">
+                  <div className="w-full rounded-xl border border-white/12 bg-black/28 px-3 py-2.5 text-sm text-white/85 sm:w-auto sm:min-w-[220px]">
                     Joining as {knownAccountName}
                   </div>
                   <Button onClick={continueToRating} disabled={isJoining}>
@@ -704,7 +704,7 @@ export default function GroupHubPage() {
                     onChange={(e) => setNameDraft(e.target.value)}
                     placeholder="Your name"
                     autoComplete="off"
-                    className="min-w-[220px]"
+                    className="w-full sm:w-auto sm:min-w-[220px]"
                   />
                   <Button
                     onClick={continueAsGuestAndJoin}
@@ -867,7 +867,7 @@ export default function GroupHubPage() {
             <div className="mt-2 flex flex-wrap gap-2">
               {canUseKnownAccountName ? (
                 <>
-                  <div className="min-w-[220px] rounded-xl border border-white/12 bg-black/28 px-3 py-2.5 text-sm text-white/85">
+                  <div className="w-full rounded-xl border border-white/12 bg-black/28 px-3 py-2.5 text-sm text-white/85 sm:w-auto sm:min-w-[220px]">
                     Joining as {knownAccountName}
                   </div>
                   <Button onClick={continueToRating} disabled={isJoining}>
@@ -881,7 +881,7 @@ export default function GroupHubPage() {
                     onChange={(e) => setNameDraft(e.target.value)}
                     placeholder="Your name"
                     autoComplete="off"
-                    className="min-w-[220px]"
+                    className="w-full sm:w-auto sm:min-w-[220px]"
                   />
                   <Button
                     onClick={continueAsGuestAndJoin}

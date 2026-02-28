@@ -17,6 +17,8 @@
 html,
 body {
   height: 100%;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
 body {
@@ -32,6 +34,7 @@ body {
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior-x: none;
 }
 
 html {

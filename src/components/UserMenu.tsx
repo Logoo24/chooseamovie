@@ -8,9 +8,16 @@ type UserMenuProps = {
   onSignOut: () => Promise<void> | void;
   isSigningOut?: boolean;
   accountHref?: string;
+  triggerClassName?: string;
 };
 
-export function UserMenu({ label, onSignOut, isSigningOut = false, accountHref = "/account" }: UserMenuProps) {
+export function UserMenu({
+  label,
+  onSignOut,
+  isSigningOut = false,
+  accountHref = "/account",
+  triggerClassName,
+}: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -40,7 +47,10 @@ export function UserMenu({ label, onSignOut, isSigningOut = false, accountHref =
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex items-center rounded-lg border border-transparent px-3 py-1.5 text-sm text-white/78 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--yellow))]/35 hover:border-white/14 hover:bg-white/[0.05] hover:text-white"
+        className={
+          triggerClassName ??
+          "inline-flex items-center justify-center rounded-lg border border-transparent px-3 py-1.5 text-sm leading-none text-white/78 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--yellow))]/35 hover:border-white/14 hover:bg-white/[0.05] hover:text-white"
+        }
       >
         {label}
       </button>
@@ -75,4 +85,3 @@ export function UserMenu({ label, onSignOut, isSigningOut = false, accountHref =
     </div>
   );
 }
-

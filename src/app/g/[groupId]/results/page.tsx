@@ -24,11 +24,6 @@ const TOP_SORT_OPTIONS: Array<{ value: TopSortBy; label: string }> = [
   { value: "average", label: "Average rating" },
   { value: "most_rated", label: "Most ratings" },
 ];
-type RatingsCoverageFilter = "all_rated" | "rated_by_everyone";
-const RATINGS_COVERAGE_OPTIONS: Array<{ value: RatingsCoverageFilter; label: string }> = [
-  { value: "all_rated", label: "All rated titles" },
-  { value: "rated_by_everyone", label: "Rated by everyone" },
-];
 
 function starsText(avg: number) {
   if (!avg) return "-";
@@ -262,8 +257,7 @@ export default function ResultsPage() {
   const [perMemberRatings, setPerMemberRatings] = useState<Record<string, Record<string, number>>>({});
   const [topLimit, setTopLimit] = useState<(typeof TOP_LIMIT_OPTIONS)[number]>(10);
   const [topSortBy, setTopSortBy] = useState<TopSortBy>("total_stars");
-  const [ratingsCoverageFilter, setRatingsCoverageFilter] =
-    useState<RatingsCoverageFilter>("all_rated");
+  const [onlyShowRatedByAll, setOnlyShowRatedByAll] = useState(false);
   const [showMemberRankings, setShowMemberRankings] = useState(false);
   const activeMemberId = activeMember?.id ?? null;
   const updatingTimerRef = useRef<number | null>(null);
@@ -419,7 +413,7 @@ export default function ResultsPage() {
   useEffect(() => {
     setTopLimit(10);
     setTopSortBy("total_stars");
-    setRatingsCoverageFilter("all_rated");
+    setOnlyShowRatedByAll(false);
     setShowMemberRankings(false);
     setMemberRemovedByHost(false);
     setShortlistFallback({});
@@ -483,7 +477,7 @@ export default function ResultsPage() {
     const requiredRaterCount = members.length;
     const rows = topRows.filter((row) => row.votes > 0);
     const filteredRows =
-      ratingsCoverageFilter === "rated_by_everyone"
+      onlyShowRatedByAll
         ? requiredRaterCount > 0
           ? rows.filter((row) => row.votes >= requiredRaterCount)
           : []
@@ -507,7 +501,7 @@ export default function ResultsPage() {
       return a.titleId.localeCompare(b.titleId);
     });
     return filteredRows;
-  }, [members.length, ratingsCoverageFilter, topRows, topSortBy]);
+  }, [members.length, onlyShowRatedByAll, topRows, topSortBy]);
 
   const top = useMemo(() => {
     return allRanked.slice(0, topLimit);
@@ -654,7 +648,7 @@ export default function ResultsPage() {
           <CardTitle>Top picks</CardTitle>
           <div className="mt-2">
             <Muted>{topSortSummary} Skips are excluded.</Muted>
-            {ratingsCoverageFilter === "rated_by_everyone" ? (
+            {onlyShowRatedByAll ? (
               <div className="mt-1 text-sm text-white/65">
                 Showing titles rated by all {members.length} {members.length === 1 ? "member" : "members"}.
               </div>
@@ -679,7 +673,7 @@ export default function ResultsPage() {
                 </div>
               </div>
 
-              <div className="grid w-full gap-3 sm:max-w-[460px] sm:grid-cols-2">
+              <div className="w-full space-y-3 sm:max-w-[460px]">
                 <div className="space-y-2">
                   <label htmlFor="top-sort-by" className="block text-xs text-white/60">
                     Sort by
@@ -698,25 +692,15 @@ export default function ResultsPage() {
                   </select>
                 </div>
 
-                <div className="space-y-2">
-                  <label htmlFor="ratings-coverage" className="block text-xs text-white/60">
-                    Show
-                  </label>
-                  <select
-                    id="ratings-coverage"
-                    value={ratingsCoverageFilter}
-                    onChange={(event) =>
-                      setRatingsCoverageFilter(event.target.value as RatingsCoverageFilter)
-                    }
-                    className="w-full rounded-xl border border-white/14 bg-black/25 px-3.5 py-2.5 text-sm text-white outline-none transition focus:border-[rgb(var(--yellow))]/60 focus:ring-2 focus:ring-[rgb(var(--yellow))]/25"
-                  >
-                    {RATINGS_COVERAGE_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value} className="bg-[rgb(var(--card-2))] text-white">
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white/85 hover:bg-white/8">
+                  <input
+                    type="checkbox"
+                    checked={onlyShowRatedByAll}
+                    onChange={(event) => setOnlyShowRatedByAll(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-[rgb(var(--yellow))]"
+                  />
+                  <span>Only show titles that have been rated by everyone</span>
+                </label>
               </div>
             </div>
           ) : null}
@@ -738,7 +722,7 @@ export default function ResultsPage() {
               </div>
             ) : resolvedTop.length === 0 ? (
               <div className="py-2 text-sm text-white/70">
-                {ratingsCoverageFilter === "rated_by_everyone"
+                {onlyShowRatedByAll
                   ? "No titles have ratings from everyone yet."
                   : "No ratings yet. Go rate a few titles."}
               </div>

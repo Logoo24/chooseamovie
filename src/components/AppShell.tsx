@@ -113,7 +113,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 })}
                 {auth.hasSession && !auth.isAnonymous ? (
                   <li>
-                    <UserMenu label={accountLabel} onSignOut={onSignOut} isSigningOut={isSigningOut} />
+                    <UserMenu
+                      label={accountLabel}
+                      onSignOut={onSignOut}
+                      isSigningOut={isSigningOut}
+                      triggerClassName="inline-flex items-center justify-center rounded-lg border border-transparent px-3 py-1.5 text-sm leading-none text-white/78 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--yellow))]/35 hover:border-white/14 hover:bg-white/[0.05] hover:text-white"
+                    />
                   </li>
                 ) : null}
               </ul>
