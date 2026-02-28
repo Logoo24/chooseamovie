@@ -37,6 +37,7 @@ export function StarRating({
   const [hoverValue, setHoverValue] = useState<number | null>(null);
   const [popTo, setPopTo] = useState<number | null>(null);
   const [canHover, setCanHover] = useState(false);
+  const [supportsHaptics, setSupportsHaptics] = useState(false);
 
   const activeValue = hoverValue ?? value;
 
@@ -55,9 +56,33 @@ export function StarRating({
     return () => media.removeListener(update);
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const coarsePointer = window.matchMedia("(pointer: coarse)");
+    const update = () => {
+      setSupportsHaptics(
+        coarsePointer.matches &&
+          typeof navigator !== "undefined" &&
+          typeof navigator.vibrate === "function"
+      );
+    };
+    update();
+
+    if (typeof coarsePointer.addEventListener === "function") {
+      coarsePointer.addEventListener("change", update);
+      return () => coarsePointer.removeEventListener("change", update);
+    }
+
+    coarsePointer.addListener(update);
+    return () => coarsePointer.removeListener(update);
+  }, []);
+
   function choose(v: 1 | 2 | 3 | 4 | 5) {
     if (disabled) return;
     setHoverValue(null);
+    if (supportsHaptics) {
+      navigator.vibrate(12);
+    }
     onChange(v);
     setPopTo(v);
     window.setTimeout(() => setPopTo(null), 240);
