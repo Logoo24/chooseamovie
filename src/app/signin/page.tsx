@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
@@ -40,7 +40,7 @@ const INITIAL_AUTH: AuthSnapshot = {
   isAnonymous: false,
 };
 
-export default function SignInPage() {
+function SignInPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [groups, setGroups] = useState<GroupCard[]>([]);
@@ -513,5 +513,21 @@ export default function SignInPage() {
         </div>
       ) : null}
     </AppShell>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense
+      fallback={
+        <AppShell>
+          <Card>
+            <Muted>Loading sign-in...</Muted>
+          </Card>
+        </AppShell>
+      }
+    >
+      <SignInPageContent />
+    </Suspense>
   );
 }

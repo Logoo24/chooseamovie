@@ -403,8 +403,8 @@ async function filterDiscoverRows(
   const endlessSettings = getEndlessSettings(settings);
   const minVoteCount = endlessSettings.filterUnpopular ? endlessSettings.minVoteCount ?? 200 : null;
   const byKey = new Map<string, EndlessQueueItem>();
-  const enforceMovieRatings = shouldFilterByMovieRating(settings);
-  const enforceTvRatings = shouldFilterByTvRating(settings);
+  const enforceMovieRatings = shouldFilterByMovieRating();
+  const enforceTvRatings = shouldFilterByTvRating();
   let movieRatings = new Map<number, NormalizedMovieRating>();
   let tvRatings = new Map<number, NormalizedTvRating>();
 
